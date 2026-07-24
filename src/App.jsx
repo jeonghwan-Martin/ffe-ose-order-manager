@@ -1,6 +1,11 @@
 import { useState, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
-import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2 } from "lucide-react";
+import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard } from "lucide-react";
+import {
+  Tooltip, Legend, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+} from "recharts";
+
 import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, getCatalog, saveCatalog } from "./api";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -15,6 +20,7 @@ const CATEGORY_COLORS = [
   { bg: "bg-sky-100", text: "text-sky-800", bar: "bg-sky-400", border: "border-sky-300" },
   { bg: "bg-violet-100", text: "text-violet-800", bar: "bg-violet-400", border: "border-violet-300" },
 ];
+const CHART_COLORS = ["#818cf8", "#2dd4bf", "#fb7185", "#fbbf24", "#38bdf8", "#a78bfa"];
 
 const DEFAULT_BASIC_PRESET = [
   "헤드보드", "침대바디", "협탁", "옷장", "붙박이 책장", "콘센트", "슬리퍼걸이",
@@ -86,9 +92,87 @@ function CatalogPickerPanel({ items, selected, onToggle, onConfirm, onCancel, ca
   );
 }
 
+function ExpenseSection({ title, items, onAdd, onUpdate, onRemove }) {
+  const budgetTotal = items.reduce((s, it) => s + (it.budgetAmount || 0), 0);
+  const actualTotal = items.reduce((s, it) => s + (it.actualAmount || 0), 0);
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm font-medium tracking-wide text-slate-500">{title}</span>
+        <button
+          onClick={onAdd}
+          className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 flex items-center gap-1"
+        >
+          <Plus size={13} /> 항목 추가
+        </button>
+      </div>
+      {items.length > 0 ? (
+        <>
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white z-10">
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                  <th className="py-1.5 font-normal">항목명</th>
+                  <th className="py-1.5 font-normal text-right">예산금액</th>
+                  <th className="py-1.5 font-normal text-right">집행금액</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it) => (
+                  <tr key={it.id} className="border-b border-slate-100">
+                    <td className="py-1.5">
+                      <input
+                        value={it.name}
+                        onChange={(e) => onUpdate(it.id, "name", e.target.value)}
+                        placeholder="예: 폐기물 처리비"
+                        className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.budgetAmount}
+                        onChange={(e) => onUpdate(it.id, "budgetAmount", e.target.value)}
+                        className="w-32 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.actualAmount}
+                        onChange={(e) => onUpdate(it.id, "actualAmount", e.target.value)}
+                        className="w-32 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                      />
+                    </td>
+                    <td className="py-1.5 pl-2">
+                      <button onClick={() => onRemove(it.id)} className="text-slate-400 hover:text-rose-600">
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-right text-xs text-slate-500 mt-2">
+            소계 — 예산 <span className="font-semibold text-slate-800">{budgetTotal.toLocaleString("ko-KR")}원</span>
+            {" / "}집행 <span className="font-semibold text-teal-700">{actualTotal.toLocaleString("ko-KR")}원</span>
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-slate-400">항목을 추가해 예산/집행 금액을 입력하세요.</p>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [projectName, setProjectName] = useState("");
   const [tier, setTier] = useState(TIERS[2]);
+  const [totalBudget, setTotalBudget] = useState(0); // 전체 공사비 중 오픈바이징팀에 배정된 예산
 
   const [categories, setCategories] = useState(["트윈", "더블", "패밀리", "스위트"]);
   const [newCategory, setNewCategory] = useState("");
@@ -114,9 +198,32 @@ export default function App() {
 
   const [roomTypes, setRoomTypes] = useState([]);
 
-  // 발주 품목: FF&E는 룸타입별, OS&E는 공통 리스트
-  const [ffeItems, setFfeItems] = useState({}); // { [roomTypeId]: [{id,name,unitPrice,qtyPerRoom}] }
-  const [oseItems, setOseItems] = useState([]); // [{id,name,unitPrice,qtyPerRoom}]
+  // 발주 품목: FF&E는 룸타입별, OS&E는 공통 리스트 (각 항목은 예산단가 unitPrice + 집행단가 actualUnitPrice)
+  const [ffeItems, setFfeItems] = useState({}); // { [roomTypeId]: [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}] }
+  const [oseItems, setOseItems] = useState([]); // [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}]
+
+  // 현장지출 / 인건비 지출 / 예산외 지출 (품목형이 아닌 금액 직접 입력 방식, 예산금액/집행금액)
+  const [siteExpenses, setSiteExpenses] = useState([]); // [{id,name,budgetAmount,actualAmount}]
+  const [laborExpenses, setLaborExpenses] = useState([]);
+  const [extraExpenses, setExtraExpenses] = useState([]);
+
+  function makeExpenseHandlers(setList) {
+    const add = () =>
+      setList((prev) => [...prev, { id: nextId(), name: "", budgetAmount: 0, actualAmount: 0 }]);
+    const update = (id, field, value) =>
+      setList((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? { ...it, [field]: field === "name" ? value : Math.max(0, parseFloat(value || "0") || 0) }
+            : it
+        )
+      );
+    const remove = (id) => setList((prev) => prev.filter((it) => it.id !== id));
+    return { add, update, remove };
+  }
+  const siteExpenseHandlers = makeExpenseHandlers(setSiteExpenses);
+  const laborExpenseHandlers = makeExpenseHandlers(setLaborExpenses);
+  const extraExpenseHandlers = makeExpenseHandlers(setExtraExpenses);
   const [pasteOpenFor, setPasteOpenFor] = useState(null); // roomTypeId | "OSE" | null
   const [pasteText, setPasteText] = useState("");
   const [copySourceFor, setCopySourceFor] = useState({}); // { [roomTypeId]: sourceRoomTypeId }
@@ -144,7 +251,7 @@ export default function App() {
       ...prev,
       [roomTypeId]: [
         ...(prev[roomTypeId] || []),
-        { id: nextId(), name: "", unitPrice: 0, qtyPerRoom: 1 },
+        { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 },
       ],
     }));
   }
@@ -157,6 +264,7 @@ export default function App() {
         id: nextId(),
         name: cols[0] || "",
         unitPrice: Math.max(0, parseFloat(cols[1] || "0") || 0),
+        actualUnitPrice: 0,
         qtyPerRoom: cols[2] ? Math.max(0, parseFloat(cols[2]) || 0) : 1,
       }));
     if (parsed.length === 0) return;
@@ -181,7 +289,7 @@ export default function App() {
       ...prev,
       [roomTypeId]: [
         ...(prev[roomTypeId] || []),
-        ...basicPreset.map((p) => ({ id: nextId(), name: p.name, unitPrice: 0, qtyPerRoom: 1 })),
+        ...basicPreset.map((p) => ({ id: nextId(), name: p.name, unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 })),
       ],
     }));
   }
@@ -203,7 +311,7 @@ export default function App() {
   }
 
   function addOseItem() {
-    setOseItems((prev) => [...prev, { id: nextId(), name: "", unitPrice: 0, qtyPerRoom: 1 }]);
+    setOseItems((prev) => [...prev, { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 }]);
   }
   function bulkAddOseItems(rows) {
     const parsed = rows
@@ -214,6 +322,7 @@ export default function App() {
         id: nextId(),
         name: cols[0] || "",
         unitPrice: Math.max(0, parseFloat(cols[1] || "0") || 0),
+        actualUnitPrice: 0,
         qtyPerRoom: cols[2] ? Math.max(0, parseFloat(cols[2]) || 0) : 1,
       }));
     if (parsed.length === 0) return;
@@ -356,6 +465,7 @@ export default function App() {
   // ---- 엑셀 업로드로 룸타입 + 호수 일괄 생성 ----
   const [importSummary, setImportSummary] = useState(null);
   const [importError, setImportError] = useState("");
+  const [overwriteOnImport, setOverwriteOnImport] = useState(true);
 
   // ---- 품목 마스터 카탈로그 (엑셀 업로드 후 골라서 삽입) ----
   const [itemCatalog, setItemCatalog] = useState([]); // [{id,name,unitPrice,category}]
@@ -390,12 +500,16 @@ export default function App() {
   function resetProjectState() {
     setProjectName("");
     setTier(TIERS[2]);
+    setTotalBudget(0);
     setCategories(["트윈", "더블", "패밀리", "스위트"]);
     setIrregularOptions(["마사지체어", "발코니", "복층"]);
     setFloors(["3F", "4F", "5F"]);
     setRoomTypes([]);
     setFfeItems({});
     setOseItems([]);
+    setSiteExpenses([]);
+    setLaborExpenses([]);
+    setExtraExpenses([]);
     setBasicPreset(DEFAULT_BASIC_PRESET.map((name) => ({ id: nextId(), name })));
     setLastSaved(null);
   }
@@ -403,12 +517,16 @@ export default function App() {
   function applyLoadedData(data) {
     if (data.projectName !== undefined) setProjectName(data.projectName);
     if (data.tier) setTier(data.tier);
+    if (data.totalBudget !== undefined) setTotalBudget(data.totalBudget);
     if (data.categories) setCategories(data.categories);
     if (data.irregularOptions) setIrregularOptions(data.irregularOptions);
     if (data.floors) setFloors(data.floors);
     if (data.roomTypes) setRoomTypes(data.roomTypes);
     if (data.ffeItems) setFfeItems(data.ffeItems);
     if (data.oseItems) setOseItems(data.oseItems);
+    if (data.siteExpenses) setSiteExpenses(data.siteExpenses);
+    if (data.laborExpenses) setLaborExpenses(data.laborExpenses);
+    if (data.extraExpenses) setExtraExpenses(data.extraExpenses);
     if (data.basicPreset) setBasicPreset(data.basicPreset);
     if (data.savedAt) setLastSaved(data.savedAt);
     idCounter = Math.max(idCounter, maxIdIn(data) + 1);
@@ -481,12 +599,16 @@ export default function App() {
       const payload = {
         projectName,
         tier,
+        totalBudget,
         categories,
         irregularOptions,
         floors,
         roomTypes,
         ffeItems,
         oseItems,
+        siteExpenses,
+        laborExpenses,
+        extraExpenses,
         basicPreset,
         savedAt: new Date().toISOString(),
       };
@@ -524,14 +646,14 @@ export default function App() {
     if (pickerOpenFor === "OSE") {
       setOseItems((prev) => [
         ...prev,
-        ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, qtyPerRoom: 1 })),
+        ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, qtyPerRoom: 1 })),
       ]);
     } else {
       setFfeItems((prev) => ({
         ...prev,
         [pickerOpenFor]: [
           ...(prev[pickerOpenFor] || []),
-          ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, qtyPerRoom: 1 })),
+          ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, qtyPerRoom: 1 })),
         ],
       }));
     }
@@ -758,18 +880,45 @@ export default function App() {
       setCategories([...newCategories]);
       setIrregularOptions([...newIrregular]);
       setFloors(finalFloors);
-      setRoomTypes((prev) => [
-        ...prev,
-        ...newRoomTypes.map((rt) => ({
-          ...rt,
-          byFloor: Object.fromEntries(finalFloors.map((f) => [f, rt.byFloor[f] || 0])),
-        })),
-      ]);
+
+      const matchKey = (rt) =>
+        [rt.category, rt.bed, rt.bathtub, [...rt.irregular].sort().join(",")].join("|");
+
+      setRoomTypes((prev) => {
+        const byKey = new Map(prev.map((rt) => [matchKey(rt), rt]));
+        const untouchedIds = new Set(prev.map((rt) => rt.id));
+        const merged = [];
+        const appended = [];
+
+        newRoomTypes.forEach((incoming) => {
+          const normalized = {
+            ...incoming,
+            byFloor: Object.fromEntries(finalFloors.map((f) => [f, incoming.byFloor[f] || 0])),
+          };
+          const key = matchKey(incoming);
+          const existing = overwriteOnImport ? byKey.get(key) : null;
+          if (existing) {
+            // 같은 룸타입(카테고리·침대·욕조·이레귤러 동일)이 이미 있으면 새로 덮어씀(중복 누적 방지)
+            merged.push({ ...existing, ...normalized, id: existing.id });
+            untouchedIds.delete(existing.id);
+          } else {
+            appended.push(normalized);
+          }
+        });
+
+        const mergedIds = new Set(merged.map((rt) => rt.id));
+        const kept = prev
+          .filter((rt) => untouchedIds.has(rt.id) && !mergedIds.has(rt.id))
+          .map((rt) => ({ ...rt, byFloor: Object.fromEntries(finalFloors.map((f) => [f, rt.byFloor[f] || 0])) }));
+
+        return [...kept, ...merged, ...appended];
+      });
 
       const totalRooms = newRoomTypes.reduce((s, rt) => s + rt.roomNumbers.length, 0);
       setImportSummary(
         `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.` +
-          (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "")
+          (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "") +
+          (overwriteOnImport ? " 기존에 같은 룸타입이 있으면 덮어썼어요." : "")
       );
     } catch (err) {
       setImportError("파일을 읽는 중 문제가 발생했어요. xlsx 형식인지 확인해주세요.");
@@ -826,7 +975,18 @@ export default function App() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            {saveError && <span className="text-xs text-rose-600">{saveError}</span>}
+            {saveError && (
+              <span className="text-xs text-rose-600 flex items-center gap-1">
+                {saveError}
+                <button
+                  onClick={() => setSaveError("")}
+                  className="text-rose-400 hover:text-rose-700"
+                  title="닫기"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
             <button
               onClick={saveProject}
               disabled={isSaving || isLoading}
@@ -873,6 +1033,17 @@ export default function App() {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">오픈바이징 배정 예산 (전체 공사비 중)</label>
+              <input
+                type="number"
+                min="0"
+                value={totalBudget}
+                onChange={(e) => setTotalBudget(Math.max(0, parseFloat(e.target.value || "0") || 0))}
+                placeholder="예: 500000000"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
           </div>
         </div>
 
@@ -892,6 +1063,14 @@ export default function App() {
           <p className="text-xs text-slate-400 mt-2">
             "룸타입 / 수량 / 인원 / 구성 / 호수" 열이 있는 시트를 올리면, 룸타입·속성·층별 배치·호수까지 한 번에 채워드려요.
           </p>
+          <label className="flex items-center gap-1.5 text-xs text-slate-500 mt-2 cursor-pointer w-fit">
+            <input
+              type="checkbox"
+              checked={overwriteOnImport}
+              onChange={(e) => setOverwriteOnImport(e.target.checked)}
+            />
+            같은 룸타입(카테고리·침대·욕조·이레귤러 동일)을 다시 올리면 새로 추가하지 않고 덮어쓰기
+          </label>
           {importSummary && (
             <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2 mt-3">
               {importSummary}
@@ -1138,15 +1317,15 @@ export default function App() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-sm border-collapse">
+              <table className="min-w-max text-sm border-collapse">
                 <thead>
                   <tr>
-                    <th className="text-left text-xs text-slate-500 font-normal pb-2 pr-3">
+                    <th className="text-left text-xs text-slate-500 font-normal pb-2 pr-3 sticky left-0 bg-white min-w-[260px]">
                       룸타입
                     </th>
                     {floors.map((f) => (
-                      <th key={f} className="text-center text-xs text-slate-500 font-normal pb-2 px-2">
-                        <div className="flex items-center justify-center gap-1">
+                      <th key={f} className="text-center text-xs text-slate-500 font-normal pb-2 px-2 min-w-[64px]">
+                        <div className="flex items-center justify-center gap-1 whitespace-nowrap">
                           {f}
                           <button onClick={() => removeFloor(f)} className="hover:text-slate-700">
                             <X size={11} />
@@ -1154,7 +1333,7 @@ export default function App() {
                         </div>
                       </th>
                     ))}
-                    <th className="text-center text-xs text-slate-500 font-normal pb-2 pl-2">합계</th>
+                    <th className="text-center text-xs text-slate-500 font-normal pb-2 pl-2 min-w-[56px]">합계</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -1163,12 +1342,12 @@ export default function App() {
                     const c = categoryColor(rt.category);
                     return (
                       <tr key={rt.id} className="border-t border-slate-100">
-                        <td className="py-2 pr-3">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-[11px] font-medium px-2 py-0.5 rounded ${c.bg} ${c.text}`}>
+                        <td className="py-2 pr-3 sticky left-0 bg-white min-w-[260px]">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[11px] font-medium px-2 py-0.5 rounded whitespace-nowrap ${c.bg} ${c.text}`}>
                               {codeFor(rt)}
                             </span>
-                            <span className="text-xs text-slate-500">
+                            <span className="text-xs text-slate-500 whitespace-nowrap">
                               {rt.category} · {rt.bed} · 욕조{rt.bathtub}
                               {rt.irregular.length > 0 ? ` · ${rt.irregular.join(", ")}` : ""}
                             </span>
@@ -1188,14 +1367,14 @@ export default function App() {
                               <summary className="text-[11px] text-amber-700 cursor-pointer select-none">
                                 호수 보기 ({rt.roomNumbers.length}개)
                               </summary>
-                              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed max-w-[240px]">
                                 {rt.roomNumbers.join(", ")}
                               </p>
                             </details>
                           )}
                         </td>
                         {floors.map((f) => (
-                          <td key={f} className="text-center px-2">
+                          <td key={f} className="text-center px-2 min-w-[64px]">
                             <input
                               type="number"
                               min="0"
@@ -1205,7 +1384,7 @@ export default function App() {
                             />
                           </td>
                         ))}
-                        <td className="text-center font-medium pl-2">{roomTypeTotal(rt)}</td>
+                        <td className="text-center font-medium pl-2 min-w-[56px]">{roomTypeTotal(rt)}</td>
                         <td className="pl-2">
                           <button
                             onClick={() => removeRoomType(rt.id)}
@@ -1218,7 +1397,7 @@ export default function App() {
                     );
                   })}
                   <tr className="border-t border-slate-200">
-                    <td className="py-2 pr-3 text-xs text-slate-500">층별 합계</td>
+                    <td className="py-2 pr-3 text-xs text-slate-500 sticky left-0 bg-white">층별 합계</td>
                     {floors.map((f) => (
                       <td key={f} className="text-center text-xs text-slate-500">
                         {floorTotal(f)}
@@ -1388,6 +1567,10 @@ export default function App() {
                   (sum, it) => sum + it.unitPrice * it.qtyPerRoom * roomCount,
                   0
                 );
+                const typeActualTotal = items.reduce(
+                  (sum, it) => sum + (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount,
+                  0
+                );
                 return (
                   <div key={rt.id}>
                     <div className="flex items-center justify-between mb-2">
@@ -1495,10 +1678,12 @@ export default function App() {
                         <thead>
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                             <th className="py-1.5 font-normal">품목명</th>
-                            <th className="py-1.5 font-normal text-right">단가</th>
+                            <th className="py-1.5 font-normal text-right">예산단가</th>
+                            <th className="py-1.5 font-normal text-right">집행단가</th>
                             <th className="py-1.5 font-normal text-right">실당 수량</th>
                             <th className="py-1.5 font-normal text-right">필요 수량</th>
-                            <th className="py-1.5 font-normal text-right">금액</th>
+                            <th className="py-1.5 font-normal text-right">예산금액</th>
+                            <th className="py-1.5 font-normal text-right">집행금액</th>
                             <th></th>
                           </tr>
                         </thead>
@@ -1519,7 +1704,16 @@ export default function App() {
                                   min="0"
                                   value={it.unitPrice}
                                   onChange={(e) => updateFfeItem(rt.id, it.id, "unitPrice", e.target.value)}
-                                  className="w-28 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                  className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                              </td>
+                              <td className="py-1.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={it.actualUnitPrice || 0}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "actualUnitPrice", e.target.value)}
+                                  className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
                                 />
                               </td>
                               <td className="py-1.5">
@@ -1538,6 +1732,9 @@ export default function App() {
                               <td className="py-1.5 text-right font-medium">
                                 {won(it.unitPrice * it.qtyPerRoom * roomCount)}
                               </td>
+                              <td className="py-1.5 text-right font-medium text-teal-700">
+                                {won((it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount)}
+                              </td>
                               <td className="py-1.5 pl-2">
                                 <button
                                   onClick={() => removeFfeItem(rt.id, it.id)}
@@ -1553,7 +1750,8 @@ export default function App() {
                     )}
                     {items.length > 0 && (
                       <div className="text-right text-xs text-slate-500">
-                        {codeFor(rt)} 소계 <span className="font-semibold text-slate-800">{won(typeTotal)}</span>
+                        {codeFor(rt)} 소계 — 예산 <span className="font-semibold text-slate-800">{won(typeTotal)}</span>
+                        {" / "}집행 <span className="font-semibold text-teal-700">{won(typeActualTotal)}</span>
                       </div>
                     )}
                   </div>
@@ -1633,10 +1831,12 @@ export default function App() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-1.5 font-normal">품목명</th>
-                  <th className="py-1.5 font-normal text-right">단가</th>
+                  <th className="py-1.5 font-normal text-right">예산단가</th>
+                  <th className="py-1.5 font-normal text-right">집행단가</th>
                   <th className="py-1.5 font-normal text-right">실당 수량</th>
                   <th className="py-1.5 font-normal text-right">필요 수량</th>
-                  <th className="py-1.5 font-normal text-right">금액</th>
+                  <th className="py-1.5 font-normal text-right">예산금액</th>
+                  <th className="py-1.5 font-normal text-right">집행금액</th>
                   <th></th>
                 </tr>
               </thead>
@@ -1657,7 +1857,16 @@ export default function App() {
                         min="0"
                         value={it.unitPrice}
                         onChange={(e) => updateOseItem(it.id, "unitPrice", e.target.value)}
-                        className="w-28 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.actualUnitPrice || 0}
+                        onChange={(e) => updateOseItem(it.id, "actualUnitPrice", e.target.value)}
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
                       />
                     </td>
                     <td className="py-1.5">
@@ -1676,6 +1885,9 @@ export default function App() {
                     <td className="py-1.5 text-right font-medium">
                       {won(it.unitPrice * it.qtyPerRoom * grandTotal)}
                     </td>
+                    <td className="py-1.5 text-right font-medium text-teal-700">
+                      {won((it.actualUnitPrice || 0) * it.qtyPerRoom * grandTotal)}
+                    </td>
                     <td className="py-1.5 pl-2">
                       <button onClick={() => removeOseItem(it.id)} className="text-slate-400 hover:text-rose-600">
                         <Trash2 size={14} />
@@ -1689,6 +1901,29 @@ export default function App() {
             <p className="text-xs text-slate-400">품목을 추가하면 전체 객실 수 기준으로 자동 계산됩니다.</p>
           )}
         </div>
+
+        {/* 현장지출 / 인건비 / 예산외 지출 */}
+        <ExpenseSection
+          title="현장지출"
+          items={siteExpenses}
+          onAdd={siteExpenseHandlers.add}
+          onUpdate={siteExpenseHandlers.update}
+          onRemove={siteExpenseHandlers.remove}
+        />
+        <ExpenseSection
+          title="인건비 지출"
+          items={laborExpenses}
+          onAdd={laborExpenseHandlers.add}
+          onUpdate={laborExpenseHandlers.update}
+          onRemove={laborExpenseHandlers.remove}
+        />
+        <ExpenseSection
+          title="예산외 지출"
+          items={extraExpenses}
+          onAdd={extraExpenseHandlers.add}
+          onUpdate={extraExpenseHandlers.update}
+          onRemove={extraExpenseHandlers.remove}
+        />
 
         {/* 발주 총액 요약 */}
         {(Object.values(ffeItems).some((arr) => arr.length > 0) || oseItems.length > 0) && (
@@ -1719,6 +1954,219 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* 프로젝트 대시보드 */}
+        {roomTypes.length > 0 &&
+          (() => {
+            const sumBudget = (items, roomCountFn) =>
+              items.reduce((s, it) => s + it.unitPrice * it.qtyPerRoom * roomCountFn(it), 0);
+            const sumActual = (items, roomCountFn) =>
+              items.reduce((s, it) => s + (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCountFn(it), 0);
+
+            let ffeBudget = 0;
+            let ffeActual = 0;
+            roomTypes.forEach((rt) => {
+              const items = ffeItems[rt.id] || [];
+              const roomCount = roomTypeTotal(rt);
+              ffeBudget += sumBudget(items, () => roomCount);
+              ffeActual += sumActual(items, () => roomCount);
+            });
+            const oseBudget = sumBudget(oseItems, () => grandTotal);
+            const oseActual = sumActual(oseItems, () => grandTotal);
+            const siteBudget = siteExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
+            const siteActual = siteExpenses.reduce((s, it) => s + (it.actualAmount || 0), 0);
+            const laborBudget = laborExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
+            const laborActual = laborExpenses.reduce((s, it) => s + (it.actualAmount || 0), 0);
+            const extraBudget = extraExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
+            const extraActual = extraExpenses.reduce((s, it) => s + (it.actualAmount || 0), 0);
+
+            const plannedTotal = ffeBudget + oseBudget + siteBudget + laborBudget + extraBudget;
+            const actualTotal = ffeActual + oseActual + siteActual + laborActual + extraActual;
+            const perRoomBudget = grandTotal > 0 ? totalBudget / grandTotal : 0;
+            const perRoomPlanned = grandTotal > 0 ? plannedTotal / grandTotal : 0;
+            const remaining = totalBudget - actualTotal; // 잔여비 (총예산 - 실사용비)
+            const planVsActual = plannedTotal - actualTotal; // 계획 대비 집행 차이
+
+            const categoryRows = [
+              { name: "FF&E", budget: ffeBudget, actual: ffeActual },
+              { name: "OS&E", budget: oseBudget, actual: oseActual },
+              { name: "현장지출", budget: siteBudget, actual: siteActual },
+              { name: "인건비", budget: laborBudget, actual: laborActual },
+              { name: "예산외 지출", budget: extraBudget, actual: extraActual },
+            ];
+
+            const ffeByRoomType = roomTypes
+              .map((rt) => {
+                const items = ffeItems[rt.id] || [];
+                const roomCount = roomTypeTotal(rt);
+                return {
+                  name: codeFor(rt),
+                  예산: sumBudget(items, () => roomCount),
+                  집행: sumActual(items, () => roomCount),
+                };
+              })
+              .filter((d) => d.예산 > 0 || d.집행 > 0)
+              .sort((a, b) => b.예산 - a.예산);
+
+            // 품목명 기준 전체 집계 (룸타입 구분 없이 뭉뚱그려서)
+            const itemAgg = new Map();
+            roomTypes.forEach((rt) => {
+              const roomCount = roomTypeTotal(rt);
+              (ffeItems[rt.id] || []).forEach((it) => {
+                if (!it.name) return;
+                const cur = itemAgg.get(it.name) || { name: it.name, budget: 0, actual: 0 };
+                cur.budget += it.unitPrice * it.qtyPerRoom * roomCount;
+                cur.actual += (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount;
+                itemAgg.set(it.name, cur);
+              });
+            });
+            oseItems.forEach((it) => {
+              if (!it.name) return;
+              const cur = itemAgg.get(it.name) || { name: it.name, budget: 0, actual: 0 };
+              cur.budget += it.unitPrice * it.qtyPerRoom * grandTotal;
+              cur.actual += (it.actualUnitPrice || 0) * it.qtyPerRoom * grandTotal;
+              itemAgg.set(it.name, cur);
+            });
+            const itemAggRows = [...itemAgg.values()].sort((a, b) => b.budget - a.budget);
+
+            const remainColor = remaining < 0 ? "text-rose-700" : "text-emerald-700";
+
+            return (
+              <div className="bg-white border border-slate-200 rounded-xl p-6">
+                <div className="flex items-center gap-2 mb-5 text-slate-500">
+                  <LayoutDashboard size={18} />
+                  <span className="text-sm font-medium tracking-wide">
+                    프로젝트 대시보드 — {projectName || "프로젝트명 미입력"}
+                  </span>
+                </div>
+
+                {/* 핵심 지표 카드 */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                  {[
+                    { label: "오픈바이징 배정 예산", value: won(totalBudget) },
+                    { label: "총 객실수", value: `${grandTotal}실` },
+                    { label: "객실당 배정예산", value: won(perRoomBudget) },
+                    { label: "예산 예상 사용비 (계획)", value: won(plannedTotal) },
+                  ].map((m) => (
+                    <div key={m.label} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                      <p className="text-[11px] text-slate-500 mb-1">{m.label}</p>
+                      <p className="text-base font-semibold text-slate-800">{m.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                  {[
+                    { label: "객실당 예상 사용비", value: won(perRoomPlanned) },
+                    { label: "실제 집행 금액", value: won(actualTotal), color: "text-teal-700" },
+                    { label: "잔여비 (예산-실사용)", value: won(remaining), color: remainColor },
+                    { label: "계획 대비 집행차이", value: won(planVsActual), color: planVsActual < 0 ? "text-rose-700" : "text-emerald-700" },
+                  ].map((m) => (
+                    <div key={m.label} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                      <p className="text-[11px] text-slate-500 mb-1">{m.label}</p>
+                      <p className={`text-base font-semibold ${m.color || "text-slate-800"}`}>{m.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 대분류별 예산 대비 집행 */}
+                <div className="mb-6">
+                  <p className="text-xs text-slate-500 mb-2">대분류별 예산 대비 집행</p>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                        <th className="py-1.5 font-normal">대분류</th>
+                        <th className="py-1.5 font-normal text-right">예산</th>
+                        <th className="py-1.5 font-normal text-right">집행</th>
+                        <th className="py-1.5 font-normal text-right">잔여</th>
+                        <th className="py-1.5 font-normal text-right">집행률</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {categoryRows.map((c) => {
+                        const rem = c.budget - c.actual;
+                        const rate = c.budget > 0 ? (c.actual / c.budget) * 100 : 0;
+                        return (
+                          <tr key={c.name} className="border-b border-slate-100">
+                            <td className="py-1.5">{c.name}</td>
+                            <td className="py-1.5 text-right">{won(c.budget)}</td>
+                            <td className="py-1.5 text-right text-teal-700">{won(c.actual)}</td>
+                            <td className={`py-1.5 text-right ${rem < 0 ? "text-rose-700" : "text-slate-600"}`}>
+                              {won(rem)}
+                            </td>
+                            <td className="py-1.5 text-right text-slate-500">{rate.toFixed(0)}%</td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="font-semibold">
+                        <td className="py-1.5">합계</td>
+                        <td className="py-1.5 text-right">{won(plannedTotal)}</td>
+                        <td className="py-1.5 text-right text-teal-700">{won(actualTotal)}</td>
+                        <td className={`py-1.5 text-right ${plannedTotal - actualTotal < 0 ? "text-rose-700" : "text-slate-800"}`}>
+                          {won(plannedTotal - actualTotal)}
+                        </td>
+                        <td className="py-1.5 text-right text-slate-500">
+                          {plannedTotal > 0 ? ((actualTotal / plannedTotal) * 100).toFixed(0) : 0}%
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 룸타입별 FF&E 예산 vs 집행 */}
+                {ffeByRoomType.length > 0 && (
+                  <div className="mb-6">
+                    <p className="text-xs text-slate-500 mb-2">룸타입별 FF&E 예산 대비 집행</p>
+                    <div style={{ width: "100%", height: 240 }}>
+                      <ResponsiveContainer>
+                        <BarChart data={ffeByRoomType} layout="vertical" margin={{ left: 20 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v) => v.toLocaleString("ko-KR")} />
+                          <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={70} />
+                          <Tooltip formatter={(v) => won(v)} />
+                          <Legend wrapperStyle={{ fontSize: 11 }} />
+                          <Bar dataKey="예산" fill="#c7d2fe" radius={[0, 4, 4, 0]} />
+                          <Bar dataKey="집행" fill="#2dd4bf" radius={[0, 4, 4, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {/* 품목별 집계 (룸타입 구분 없이 뭉뚱그려서) */}
+                {itemAggRows.length > 0 && (
+                  <div>
+                    <p className="text-xs text-slate-500 mb-2">품목별 지출 (전체 룸타입 통합 집계)</p>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                          <th className="py-1.5 font-normal">품목명</th>
+                          <th className="py-1.5 font-normal text-right">예산금액</th>
+                          <th className="py-1.5 font-normal text-right">집행금액</th>
+                          <th className="py-1.5 font-normal text-right">차액</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {itemAggRows.map((row) => (
+                          <tr key={row.name} className="border-b border-slate-100">
+                            <td className="py-1.5">{row.name}</td>
+                            <td className="py-1.5 text-right">{won(row.budget)}</td>
+                            <td className="py-1.5 text-right text-teal-700">{won(row.actual)}</td>
+                            <td
+                              className={`py-1.5 text-right ${
+                                row.budget - row.actual < 0 ? "text-rose-700" : "text-slate-500"
+                              }`}
+                            >
+                              {won(row.budget - row.actual)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
       </div>
     </div>
   );
