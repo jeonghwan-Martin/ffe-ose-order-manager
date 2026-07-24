@@ -197,6 +197,8 @@ export default function App() {
   }
 
   const [roomTypes, setRoomTypes] = useState([]);
+  const [showFloorPlan, setShowFloorPlan] = useState(true);
+  const [floorPlanAutoOffApplied, setFloorPlanAutoOffApplied] = useState(false);
 
   // 발주 품목: FF&E는 룸타입별, OS&E는 공통 리스트 (각 항목은 예산단가 unitPrice + 집행단가 actualUnitPrice)
   const [ffeItems, setFfeItems] = useState({}); // { [roomTypeId]: [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}] }
@@ -934,6 +936,13 @@ export default function App() {
   const floorTotal = (floor) =>
     roomTypes.reduce((sum, rt) => sum + (rt.byFloor[floor] || 0), 0);
 
+  useEffect(() => {
+    if (!floorPlanAutoOffApplied && grandTotal > 100) {
+      setShowFloorPlan(false);
+      setFloorPlanAutoOffApplied(true);
+    }
+  }, [grandTotal, floorPlanAutoOffApplied]);
+
   function codeFor(rt) {
     const bed = rt.bed === "싱글" ? "S" : "Q";
     const bath = rt.bathtub === "유" ? "B" : "NB";
@@ -943,6 +952,14 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #report-print-area, #report-print-area * { visibility: visible; }
+          #report-print-area { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none; border: none; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
         {/* Save bar */}
         <div className="bg-white border border-slate-200 rounded-xl px-5 py-3 flex items-center justify-between flex-wrap gap-3">
@@ -1410,42 +1427,71 @@ export default function App() {
               </table>
             </div>
 
-            {/* Floor plan visual: stacked bars per floor */}
-            <div className="mt-6 space-y-2">
-              <p className="text-xs text-slate-500 mb-2">배치도 (층별 구성 비율)</p>
-              {floors.map((f) => {
-                const total = floorTotal(f);
-                return (
-                  <div key={f} className="flex items-center gap-3">
-                    <span className="w-10 text-xs text-slate-500">{f}</span>
-                    <div className="flex-1 h-7 rounded-md overflow-hidden bg-slate-100 flex">
-                      {total === 0 ? (
-                        <div className="w-full flex items-center justify-center text-[11px] text-slate-400">
-                          미배치
+            {/* Floor plan visual: cell grid per floor */}
+            <div className="mt-6">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs text-slate-500">배치도 (층별 객실 셀)</p>
+                <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showFloorPlan}
+                    onChange={(e) => setShowFloorPlan(e.target.checked)}
+                  />
+                  배치도 표시
+                  {grandTotal > 100 && <span className="text-amber-600">(100실 초과 — 무거울 수 있어요)</span>}
+                </label>
+              </div>
+              {showFloorPlan ? (
+                <div className="space-y-2">
+                  {floors.map((f) => {
+                    const total = floorTotal(f);
+                    const cells = [];
+                    roomTypes.forEach((rt) => {
+                      const qty = rt.byFloor[f] || 0;
+                      for (let i = 0; i < qty; i++) cells.push(rt);
+                    });
+                    return (
+                      <div key={f} className="flex items-start gap-3">
+                        <span className="w-10 pt-1 text-xs text-slate-500 shrink-0">{f}</span>
+                        <div className="flex-1 flex flex-wrap gap-1 bg-slate-50 border border-slate-200 rounded-md p-1.5 min-h-[34px]">
+                          {total === 0 ? (
+                            <span className="text-[11px] text-slate-400 px-1">미배치</span>
+                          ) : (
+                            cells.map((rt, i) => {
+                              const c = categoryColor(rt.category);
+                              return (
+                                <div
+                                  key={`${rt.id}-${i}`}
+                                  title={`${codeFor(rt)} · ${rt.category}`}
+                                  className={`w-6 h-6 rounded ${c.bar} flex items-center justify-center`}
+                                />
+                              );
+                            })
+                          )}
                         </div>
-                      ) : (
-                        roomTypes.map((rt) => {
-                          const qty = rt.byFloor[f] || 0;
-                          if (qty === 0) return null;
-                          const c = categoryColor(rt.category);
-                          return (
-                            <div
-                              key={rt.id}
-                              className={`${c.bar} h-full flex items-center justify-center text-[10px] text-white`}
-                              style={{ width: `${(qty / total) * 100}%` }}
-                              title={`${codeFor(rt)} · ${qty}실`}
-                            >
-                              {qty / total > 0.12 ? `${codeFor(rt)} ${qty}` : ""}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                    <span className="w-10 text-xs text-slate-500 text-right">{total}실</span>
+                        <span className="w-10 pt-1 text-xs text-slate-500 text-right shrink-0">{total}실</span>
+                      </div>
+                    );
+                  })}
+                  <div className="flex flex-wrap gap-3 pt-1">
+                    {roomTypes.map((rt) => {
+                      const c = categoryColor(rt.category);
+                      return (
+                        <span key={rt.id} className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                          <span className={`w-3 h-3 rounded ${c.bar}`} />
+                          {codeFor(rt)}
+                        </span>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-md p-3">
+                  배치도가 꺼져 있어요. 위 체크박스로 다시 켤 수 있어요.
+                </p>
+              )}
             </div>
+
           </div>
         )}
 
@@ -2031,14 +2077,86 @@ export default function App() {
 
             const remainColor = remaining < 0 ? "text-rose-700" : "text-emerald-700";
 
+            function exportToExcel() {
+              const wb = XLSX.utils.book_new();
+
+              const summarySheet = XLSX.utils.aoa_to_sheet([
+                [`${projectName || "프로젝트"} 예산 보고`],
+                [],
+                ["오픈바이징 배정 예산", totalBudget],
+                ["총 객실수", grandTotal],
+                ["객실당 배정예산", Math.round(perRoomBudget)],
+                ["예산 예상 사용비(계획)", plannedTotal],
+                ["객실당 예상 사용비", Math.round(perRoomPlanned)],
+                ["실제 집행 금액", actualTotal],
+                ["잔여비(예산-실사용)", remaining],
+                ["계획 대비 집행차이", planVsActual],
+                [],
+                ["대분류", "예산", "집행", "잔여", "집행률"],
+                ...categoryRows.map((c) => [
+                  c.name,
+                  c.budget,
+                  c.actual,
+                  c.budget - c.actual,
+                  c.budget > 0 ? `${((c.actual / c.budget) * 100).toFixed(0)}%` : "0%",
+                ]),
+                ["합계", plannedTotal, actualTotal, plannedTotal - actualTotal],
+              ]);
+              XLSX.utils.book_append_sheet(wb, summarySheet, "요약");
+
+              const ffeSheet = XLSX.utils.aoa_to_sheet([
+                ["룸타입", "예산", "집행"],
+                ...ffeByRoomType.map((d) => [d.name, d.예산, d.집행]),
+              ]);
+              XLSX.utils.book_append_sheet(wb, ffeSheet, "룸타입별FFE");
+
+              const itemSheet = XLSX.utils.aoa_to_sheet([
+                ["품목명", "예산금액", "집행금액", "차액"],
+                ...itemAggRows.map((r) => [r.name, r.budget, r.actual, r.budget - r.actual]),
+              ]);
+              XLSX.utils.book_append_sheet(wb, itemSheet, "품목별집계");
+
+              const floorSheet = XLSX.utils.aoa_to_sheet([
+                ["층", ...roomTypes.map((rt) => codeFor(rt)), "합계"],
+                ...floors.map((f) => [
+                  f,
+                  ...roomTypes.map((rt) => rt.byFloor[f] || 0),
+                  floorTotal(f),
+                ]),
+                ["합계", ...roomTypes.map((rt) => roomTypeTotal(rt)), grandTotal],
+              ]);
+              XLSX.utils.book_append_sheet(wb, floorSheet, "층별배치");
+
+              XLSX.writeFile(wb, `${projectName || "프로젝트"}_보고서.xlsx`);
+            }
+
             return (
-              <div className="bg-white border border-slate-200 rounded-xl p-6">
-                <div className="flex items-center gap-2 mb-5 text-slate-500">
-                  <LayoutDashboard size={18} />
-                  <span className="text-sm font-medium tracking-wide">
-                    프로젝트 대시보드 — {projectName || "프로젝트명 미입력"}
-                  </span>
+              <div className="bg-white border border-slate-200 rounded-xl p-6" id="report-print-area">
+                <div className="flex items-center justify-between mb-5 flex-wrap gap-2 no-print">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <LayoutDashboard size={18} />
+                    <span className="text-sm font-medium tracking-wide">
+                      프로젝트 대시보드 — {projectName || "프로젝트명 미입력"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={exportToExcel}
+                      className="text-xs border border-slate-300 rounded-lg px-3 py-1.5 hover:bg-slate-50"
+                    >
+                      엑셀로 내보내기
+                    </button>
+                    <button
+                      onClick={() => window.print()}
+                      className="text-xs border border-slate-300 rounded-lg px-3 py-1.5 hover:bg-slate-50"
+                    >
+                      PDF로 저장 (인쇄)
+                    </button>
+                  </div>
                 </div>
+                <p className="text-sm font-medium tracking-wide text-slate-500 mb-5 hidden print:block">
+                  프로젝트 대시보드 — {projectName || "프로젝트명 미입력"}
+                </p>
 
                 {/* 핵심 지표 카드 */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
