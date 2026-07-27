@@ -11,6 +11,8 @@ import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, get
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
 const BED_TYPES = ["싱글", "퀸"];
 const BATHTUB = ["유", "무"];
+// 브랜드 룸 네이밍 가이드라인 v1.0 — Core Room Grade 고정 6단계
+const ROOM_GRADES = ["Standard", "Superior", "Deluxe", "Premier", "Suite", "Signature Suite"];
 
 const CATEGORY_COLORS = [
   { bg: "bg-indigo-100", text: "text-indigo-800", bar: "bg-indigo-400", border: "border-indigo-300" },
@@ -179,6 +181,15 @@ export default function App() {
 
   const [irregularOptions, setIrregularOptions] = useState(["마사지체어", "발코니", "복층"]);
   const [newIrregular, setNewIrregular] = useState("");
+
+  // 브랜드 룸 네이밍 가이드라인 v1.0 — 라이프스타일/콘셉트 호텔용 브랜드 고유 룸 네임 (예: '시즈쿠')
+  const [brandRoomName, setBrandRoomName] = useState("");
+  // 객실 콘텐츠 (Room Feature) — 프로젝트별 커스텀, 룸 네이밍에 반영
+  const [roomFeatures, setRoomFeatures] = useState(["스파", "테라스"]);
+  const [newRoomFeature, setNewRoomFeature] = useState("");
+  // 전망 (View Type) — 프로젝트별 커스텀, 필요한 경우에만 룸 네이밍에 반영
+  const [viewTypes, setViewTypes] = useState(["오션뷰", "시티뷰"]);
+  const [newViewType, setNewViewType] = useState("");
 
   const [floors, setFloors] = useState(["3F", "4F", "5F"]);
   const [newFloor, setNewFloor] = useState("");
@@ -351,7 +362,34 @@ export default function App() {
     category: categories[0] || "",
     irregular: [],
     mattressQty: 1,
+    grade: "Superior",
+    features: [],
+    view: "",
+    includeBedInName: false,
+    includeViewInName: false,
+    customName: "",
   });
+
+  function toggleDraftFeature(opt) {
+    setDraft((d) => ({
+      ...d,
+      features: d.features.includes(opt)
+        ? d.features.filter((o) => o !== opt)
+        : [...d.features, opt],
+    }));
+  }
+
+  // 브랜드 룸 네이밍 가이드라인 v1.0 — 객실등급 + 객실콘텐츠 + (필요시)침대구성 + (필요시)전망 조합으로 자동 생성
+  function generateRoomName(rt) {
+    if (rt.customName && rt.customName.trim()) return rt.customName.trim();
+    const parts = [];
+    if (brandRoomName.trim()) parts.push(brandRoomName.trim());
+    parts.push(rt.grade || "Superior");
+    if (rt.features && rt.features.length > 0) parts.push(rt.features.join(" "));
+    if (rt.includeBedInName) parts.push(rt.category);
+    if (rt.includeViewInName && rt.view) parts.push(rt.view);
+    return parts.join(" ");
+  }
 
   const categoryColor = (category) => {
     const idx = categories.indexOf(category);
@@ -375,6 +413,24 @@ export default function App() {
   }
   function removeIrregular(opt) {
     setIrregularOptions(irregularOptions.filter((o) => o !== opt));
+  }
+  function addRoomFeature() {
+    const v = newRoomFeature.trim();
+    if (!v || roomFeatures.includes(v)) return;
+    setRoomFeatures([...roomFeatures, v]);
+    setNewRoomFeature("");
+  }
+  function removeRoomFeature(opt) {
+    setRoomFeatures(roomFeatures.filter((o) => o !== opt));
+  }
+  function addViewType() {
+    const v = newViewType.trim();
+    if (!v || viewTypes.includes(v)) return;
+    setViewTypes([...viewTypes, v]);
+    setNewViewType("");
+  }
+  function removeViewType(opt) {
+    setViewTypes(viewTypes.filter((o) => o !== opt));
   }
   function addFloor() {
     const v = newFloor.trim();
@@ -428,7 +484,10 @@ export default function App() {
         rt.bathtub === draft.bathtub &&
         rt.category === draft.category &&
         rt.mattressQty === draft.mattressQty &&
-        JSON.stringify([...rt.irregular].sort()) === JSON.stringify([...draft.irregular].sort())
+        rt.grade === draft.grade &&
+        rt.view === draft.view &&
+        JSON.stringify([...rt.irregular].sort()) === JSON.stringify([...draft.irregular].sort()) &&
+        JSON.stringify([...rt.features].sort()) === JSON.stringify([...draft.features].sort())
     );
     if (exists) return;
     setRoomTypes([
@@ -440,11 +499,25 @@ export default function App() {
         category: draft.category,
         irregular: draft.irregular,
         mattressQty: draft.mattressQty,
+        grade: draft.grade,
+        features: draft.features,
+        view: draft.view,
+        includeBedInName: draft.includeBedInName,
+        includeViewInName: draft.includeViewInName,
+        customName: draft.customName,
+        otaBedCount: "",
+        otaBedSize: "",
+        otaMaxOccupancy: "",
+        otaFacilities: "",
         roomNumbers: [],
         byFloor: Object.fromEntries(floors.map((f) => [f, 0])),
       },
     ]);
-    setDraft((d) => ({ ...d, irregular: [], mattressQty: 1 }));
+    setDraft((d) => ({ ...d, irregular: [], features: [], mattressQty: 1, customName: "" }));
+  }
+
+  function updateRoomTypeField(id, field, value) {
+    setRoomTypes((prev) => prev.map((rt) => (rt.id === id ? { ...rt, [field]: value } : rt)));
   }
 
   function removeRoomType(id) {
@@ -505,6 +578,9 @@ export default function App() {
     setTotalBudget(0);
     setCategories(["트윈", "더블", "패밀리", "스위트"]);
     setIrregularOptions(["마사지체어", "발코니", "복층"]);
+    setBrandRoomName("");
+    setRoomFeatures(["스파", "테라스"]);
+    setViewTypes(["오션뷰", "시티뷰"]);
     setFloors(["3F", "4F", "5F"]);
     setRoomTypes([]);
     setFfeItems({});
@@ -522,6 +598,9 @@ export default function App() {
     if (data.totalBudget !== undefined) setTotalBudget(data.totalBudget);
     if (data.categories) setCategories(data.categories);
     if (data.irregularOptions) setIrregularOptions(data.irregularOptions);
+    if (data.brandRoomName !== undefined) setBrandRoomName(data.brandRoomName);
+    if (data.roomFeatures) setRoomFeatures(data.roomFeatures);
+    if (data.viewTypes) setViewTypes(data.viewTypes);
     if (data.floors) setFloors(data.floors);
     if (data.roomTypes) setRoomTypes(data.roomTypes);
     if (data.ffeItems) setFfeItems(data.ffeItems);
@@ -604,6 +683,9 @@ export default function App() {
         totalBudget,
         categories,
         irregularOptions,
+        brandRoomName,
+        roomFeatures,
+        viewTypes,
         floors,
         roomTypes,
         ffeItems,
@@ -867,6 +949,16 @@ export default function App() {
           category,
           irregular: extraIrregular,
           mattressQty,
+          grade: "Superior",
+          features: [],
+          view: "",
+          includeBedInName: false,
+          includeViewInName: false,
+          customName: "",
+          otaBedCount: "",
+          otaBedSize: "",
+          otaMaxOccupancy: "",
+          otaFacilities: "",
           roomNumbers,
           sourceLabel: label.split("-")[0].trim(),
           byFloor,
@@ -1061,6 +1153,20 @@ export default function App() {
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
               />
             </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">
+                브랜드 룸 네임 <span className="text-slate-400">(라이프스타일·콘셉트 호텔만 해당)</span>
+              </label>
+              <input
+                value={brandRoomName}
+                onChange={(e) => setBrandRoomName(e.target.value)}
+                placeholder="예: 시즈쿠"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                입력하면 객실 등급명 앞에 자동으로 붙어요. (브랜드 룸 네이밍 가이드라인 v1.0)
+              </p>
+            </div>
           </div>
         </div>
 
@@ -1204,6 +1310,70 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <div>
+              <p className="text-xs text-slate-500 mb-2">객실 콘텐츠 Room Feature (룸 네이밍에 반영)</p>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {roomFeatures.map((o) => (
+                  <span
+                    key={o}
+                    className="inline-flex items-center gap-1 bg-amber-50 text-amber-800 text-xs px-2.5 py-1 rounded-full"
+                  >
+                    {o}
+                    <button onClick={() => removeRoomFeature(o)} className="hover:opacity-60">
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newRoomFeature}
+                  onChange={(e) => setNewRoomFeature(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addRoomFeature()}
+                  placeholder="예: 스파, 복층"
+                  className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <button
+                  onClick={addRoomFeature}
+                  className="border border-slate-300 rounded-lg px-2.5 hover:bg-slate-50"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs text-slate-500 mb-2">전망 View Type (선택 시에만 룸 네이밍에 반영)</p>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {viewTypes.map((o) => (
+                  <span
+                    key={o}
+                    className="inline-flex items-center gap-1 bg-sky-50 text-sky-800 text-xs px-2.5 py-1 rounded-full"
+                  >
+                    {o}
+                    <button onClick={() => removeViewType(o)} className="hover:opacity-60">
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newViewType}
+                  onChange={(e) => setNewViewType(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addViewType()}
+                  placeholder="예: 오션뷰"
+                  className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <button
+                  onClick={addViewType}
+                  className="border border-slate-300 rounded-lg px-2.5 hover:bg-slate-50"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="h-px bg-slate-200 my-5" />
@@ -1248,6 +1418,23 @@ export default function App() {
               </select>
             </div>
             <div>
+              <label className="block text-xs text-slate-500 mb-1">객실 등급 Core Room Grade</label>
+              <select
+                value={draft.grade}
+                onChange={(e) => setDraft({ ...draft, grade: e.target.value })}
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm"
+              >
+                {ROOM_GRADES.map((g) => (
+                  <option key={g}>{g}</option>
+                ))}
+              </select>
+              {draft.grade === "Standard" && (
+                <p className="text-[11px] text-amber-600 mt-1 max-w-[160px]">
+                  면적이 더 작은 타입에 한해서만 사용
+                </p>
+              )}
+            </div>
+            <div>
               <label className="block text-xs text-slate-500 mb-1">매트리스 수량</label>
               <input
                 type="number"
@@ -1277,9 +1464,83 @@ export default function App() {
                 ))}
               </div>
             </div>
+          </div>
+
+          <div className="h-px bg-slate-200 my-4" />
+
+          {/* Room naming — 브랜드 룸 네이밍 가이드라인 v1.0 */}
+          <p className="text-xs text-slate-500 mb-3">룸 네이밍 (브랜드 룸 네이밍 가이드라인 v1.0)</p>
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="min-w-[180px]">
+              <label className="block text-xs text-slate-500 mb-1">객실 콘텐츠 Room Feature</label>
+              <div className="flex flex-wrap gap-1.5">
+                {roomFeatures.map((o) => (
+                  <button
+                    key={o}
+                    onClick={() => toggleDraftFeature(o)}
+                    className={`text-xs px-2.5 py-1 rounded-full border ${
+                      draft.features.includes(o)
+                        ? "bg-amber-600 text-white border-amber-600"
+                        : "border-slate-300 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    {o}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">전망 View Type</label>
+              <select
+                value={draft.view}
+                onChange={(e) => setDraft({ ...draft, view: e.target.value })}
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm"
+              >
+                <option value="">미지정</option>
+                {viewTypes.map((v) => (
+                  <option key={v}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-3 pb-1.5">
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={draft.includeBedInName}
+                  onChange={(e) => setDraft({ ...draft, includeBedInName: e.target.checked })}
+                />
+                침대구성을 이름에 포함
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={draft.includeViewInName}
+                  onChange={(e) => setDraft({ ...draft, includeViewInName: e.target.checked })}
+                  disabled={!draft.view}
+                />
+                전망을 이름에 포함
+              </label>
+            </div>
+            <div className="flex-1 min-w-[220px]">
+              <label className="block text-xs text-slate-500 mb-1">
+                커스텀 명칭 (선택 — 비워두면 자동 생성)
+              </label>
+              <input
+                value={draft.customName}
+                onChange={(e) => setDraft({ ...draft, customName: e.target.value })}
+                placeholder={generateRoomName(draft)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 mt-3">
+            생성될 객실명: <span className="font-medium text-amber-700">{generateRoomName(draft)}</span>
+          </p>
+
+          <div className="mt-4 text-right">
             <button
               onClick={addRoomType}
-              className="bg-amber-700 text-white text-sm px-4 py-2 rounded-lg hover:bg-amber-800 flex items-center gap-1.5"
+              className="bg-amber-700 text-white text-sm px-4 py-2 rounded-lg hover:bg-amber-800 inline-flex items-center gap-1.5"
             >
               <Plus size={16} /> 룸타입 추가
             </button>
@@ -1360,6 +1621,15 @@ export default function App() {
                     return (
                       <tr key={rt.id} className="border-t border-slate-100">
                         <td className="py-2 pr-3 sticky left-0 bg-white min-w-[260px]">
+                          <div className="mb-1">
+                            <input
+                              value={rt.customName || ""}
+                              onChange={(e) => updateRoomTypeField(rt.id, "customName", e.target.value)}
+                              placeholder={generateRoomName(rt)}
+                              title="객실명 (비워두면 자동 생성명 사용)"
+                              className="text-sm font-medium text-slate-800 border-b border-dashed border-slate-300 focus:outline-none focus:border-amber-500 bg-transparent w-full max-w-[240px]"
+                            />
+                          </div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className={`text-[11px] font-medium px-2 py-0.5 rounded whitespace-nowrap ${c.bg} ${c.text}`}>
                               {codeFor(rt)}
@@ -1462,7 +1732,7 @@ export default function App() {
                               return (
                                 <div
                                   key={`${rt.id}-${i}`}
-                                  title={`${codeFor(rt)} · ${rt.category}`}
+                                  title={`${codeFor(rt)} · ${generateRoomName(rt)}`}
                                   className={`w-6 h-6 rounded ${c.bar} flex items-center justify-center`}
                                 />
                               );
@@ -1510,6 +1780,8 @@ export default function App() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-2 font-normal">코드</th>
+                  <th className="py-2 font-normal">객실명</th>
+                  <th className="py-2 font-normal">등급</th>
                   <th className="py-2 font-normal">룸카테고리</th>
                   <th className="py-2 font-normal">침대타입</th>
                   <th className="py-2 font-normal">욕조</th>
@@ -1531,6 +1803,8 @@ export default function App() {
                           {codeFor(rt)}
                         </span>
                       </td>
+                      <td className="py-2 font-medium text-slate-800">{generateRoomName(rt)}</td>
+                      <td className="py-2 text-slate-500">{rt.grade || "Superior"}</td>
                       <td className="py-2">{rt.category}</td>
                       <td className="py-2">{rt.bed}</td>
                       <td className="py-2">{rt.bathtub}</td>
@@ -1550,6 +1824,72 @@ export default function App() {
             </table>
           </div>
         )}
+
+        {/* OTA 상세정보 — 객실명과 분리된 구조화 정보 (브랜드 룸 네이밍 가이드라인 v1.0) */}
+        {roomTypes.length > 0 && (
+          <div className="bg-white border border-slate-200 rounded-xl p-6">
+            <div className="flex items-center gap-2 mb-1 text-slate-500">
+              <Table2 size={18} />
+              <span className="text-sm font-medium tracking-wide">OTA 상세정보</span>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              객실명에는 넣지 않고, OTA·홈페이지 상세 정보란에 별도로 표기할 항목이에요.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="py-2 font-normal">객실명</th>
+                    <th className="py-2 font-normal">침대 수량</th>
+                    <th className="py-2 font-normal">침대 규격</th>
+                    <th className="py-2 font-normal">최대 투숙인원</th>
+                    <th className="py-2 font-normal">주요 시설</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roomTypes.map((rt) => (
+                    <tr key={rt.id} className="border-b border-slate-100">
+                      <td className="py-2 font-medium text-slate-800 whitespace-nowrap">{generateRoomName(rt)}</td>
+                      <td className="py-2">
+                        <input
+                          value={rt.otaBedCount || ""}
+                          onChange={(e) => updateRoomTypeField(rt.id, "otaBedCount", e.target.value)}
+                          placeholder="예: 퀸 1개"
+                          className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </td>
+                      <td className="py-2">
+                        <input
+                          value={rt.otaBedSize || ""}
+                          onChange={(e) => updateRoomTypeField(rt.id, "otaBedSize", e.target.value)}
+                          placeholder="예: 160x200cm"
+                          className="w-28 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </td>
+                      <td className="py-2">
+                        <input
+                          value={rt.otaMaxOccupancy || ""}
+                          onChange={(e) => updateRoomTypeField(rt.id, "otaMaxOccupancy", e.target.value)}
+                          placeholder="예: 기준2/최대3"
+                          className="w-28 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </td>
+                      <td className="py-2">
+                        <input
+                          value={rt.otaFacilities || ""}
+                          onChange={(e) => updateRoomTypeField(rt.id, "otaFacilities", e.target.value)}
+                          placeholder="예: 스파욕조, 테라스, 반신욕조"
+                          className="w-full min-w-[220px] border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* FF&E 발주 품목 (룸타입별) */}
         {roomTypes.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-xl p-6">
@@ -1625,7 +1965,7 @@ export default function App() {
                           {codeFor(rt)}
                         </span>
                         <span className="text-xs text-slate-500">
-                          {rt.category} · 객실 {roomCount}실
+                          {generateRoomName(rt)} · 객실 {roomCount}실
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5 flex-wrap">
