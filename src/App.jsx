@@ -24,6 +24,30 @@ const CATEGORY_COLORS = [
 ];
 const CHART_COLORS = ["#818cf8", "#2dd4bf", "#fb7185", "#fbbf24", "#38bdf8", "#a78bfa"];
 
+const DEFAULT_MILESTONES = [
+  "룸타입 책정",
+  "예산안 확정",
+  "집기(FF&E/OS&E) 확정",
+  "발주 일정",
+  "현장 투입 ~ 오픈바이징(촬영 포함)",
+  "운영사 인계",
+];
+
+function toDate(s) {
+  return s ? new Date(s + "T00:00:00") : null;
+}
+function daysBetween(a, b) {
+  return (b - a) / (1000 * 60 * 60 * 24);
+}
+function fmtDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+function addDays(d, n) {
+  const nd = new Date(d);
+  nd.setDate(nd.getDate() + n);
+  return nd;
+}
+
 const DEFAULT_BASIC_PRESET = [
   "헤드보드", "침대바디", "협탁", "옷장", "붙박이 책장", "콘센트", "슬리퍼걸이",
   "구둣주걱", "리모컨거치대", "입식 테이블", "입식 의자", "객실 슬리퍼", "욕실 슬리퍼",
@@ -171,6 +195,223 @@ function ExpenseSection({ title, items, onAdd, onUpdate, onRemove }) {
   );
 }
 
+function ScheduleTab({ scheduleStart, setScheduleStart, milestones, setMilestones }) {
+  function updateMilestone(id, field, value) {
+    setMilestones((prev) =>
+      prev.map((m) =>
+        m.id === id
+          ? { ...m, [field]: field === "progress" || field === "weight" ? Math.max(0, parseFloat(value || "0") || 0) : value }
+          : m
+      )
+    );
+  }
+
+  const totalWeight = milestones.reduce((s, m) => s + m.weight, 0) || 1;
+  const overallProgress = milestones.reduce((s, m) => s + m.weight * m.progress, 0) / totalWeight;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  function statusOf(m) {
+    if (m.progress >= 100) return { label: "완료", color: "text-emerald-700 bg-emerald-50" };
+    const planEnd = toDate(m.planEnd);
+    const planStart = toDate(m.planStart);
+    if (planEnd && today > planEnd) return { label: "지연", color: "text-rose-700 bg-rose-50" };
+    if (planStart && today >= planStart) return { label: "진행중", color: "text-amber-700 bg-amber-50" };
+    return { label: "예정", color: "text-slate-500 bg-slate-100" };
+  }
+
+  // 간트 표시 범위 계산
+  const allDates = [];
+  const base = toDate(scheduleStart);
+  if (base) allDates.push(base);
+  milestones.forEach((m) => {
+    [m.planStart, m.planEnd, m.actualStart, m.actualEnd].forEach((s) => {
+      const d = toDate(s);
+      if (d) allDates.push(d);
+    });
+  });
+  const minDate = allDates.length ? new Date(Math.min(...allDates)) : today;
+  const maxDateRaw = allDates.length ? new Date(Math.max(...allDates)) : addDays(today, 180);
+  const maxDate = addDays(maxDateRaw, 7);
+  const totalDays = Math.max(1, daysBetween(minDate, maxDate));
+
+  const pct = (d) => (Math.max(0, Math.min(totalDays, daysBetween(minDate, d))) / totalDays) * 100;
+
+  // 월 단위 눈금
+  const monthTicks = [];
+  {
+    let cursor = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+    while (cursor <= maxDate) {
+      if (cursor >= minDate) monthTicks.push(new Date(cursor));
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    }
+  }
+  const todayPct = today >= minDate && today <= maxDate ? pct(today) : null;
+
+  return (
+    <div className="space-y-8">
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <div className="flex items-center justify-between flex-wrap gap-4 mb-2">
+          <div className="flex items-center gap-3">
+            <Building2 size={18} className="text-slate-500" />
+            <span className="text-sm font-medium tracking-wide text-slate-500">프로젝트 공정표</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-slate-500">프로젝트 시작일</label>
+            <input
+              type="date"
+              value={scheduleStart}
+              onChange={(e) => setScheduleStart(e.target.value)}
+              className="border border-slate-300 rounded-lg px-2 py-1 text-sm"
+            />
+          </div>
+          <div className="text-right">
+            <p className="text-[11px] text-slate-500">전체 공정률</p>
+            <p className="text-2xl font-bold text-slate-800">{overallProgress.toFixed(1)}%</p>
+          </div>
+        </div>
+        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-amber-600 rounded-full transition-all"
+            style={{ width: `${Math.min(100, overallProgress)}%` }}
+          />
+        </div>
+      </div>
+
+      {/* 마일스톤 표 */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 overflow-x-auto">
+        <table className="w-full text-sm min-w-[900px]">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 font-normal">마일스톤</th>
+              <th className="py-2 font-normal text-right">가중치</th>
+              <th className="py-2 font-normal text-center">계획시작</th>
+              <th className="py-2 font-normal text-center">계획종료</th>
+              <th className="py-2 font-normal text-center">실제시작</th>
+              <th className="py-2 font-normal text-center">실제종료</th>
+              <th className="py-2 font-normal text-center">진행률</th>
+              <th className="py-2 font-normal text-center">상태</th>
+              <th className="py-2 font-normal">비고</th>
+            </tr>
+          </thead>
+          <tbody>
+            {milestones.map((m) => {
+              const s = statusOf(m);
+              return (
+                <tr key={m.id} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-2 font-medium text-slate-700 whitespace-nowrap">{m.name}</td>
+                  <td className="py-1.5">
+                    <input
+                      type="number"
+                      min="0"
+                      value={m.weight}
+                      onChange={(e) => updateMilestone(m.id, "weight", e.target.value)}
+                      className="w-14 text-right border border-slate-200 rounded-md px-1.5 py-1 text-xs"
+                    />
+                  </td>
+                  {["planStart", "planEnd", "actualStart", "actualEnd"].map((f) => (
+                    <td key={f} className="py-1.5 px-1">
+                      <input
+                        type="date"
+                        value={m[f]}
+                        onChange={(e) => updateMilestone(m.id, f, e.target.value)}
+                        className="border border-slate-200 rounded-md px-1 py-1 text-xs w-[118px]"
+                      />
+                    </td>
+                  ))}
+                  <td className="py-1.5">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={m.progress}
+                      onChange={(e) => updateMilestone(m.id, "progress", e.target.value)}
+                      className="w-14 text-right border border-slate-200 rounded-md px-1.5 py-1 text-xs"
+                    />
+                  </td>
+                  <td className="py-1.5 text-center">
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded ${s.color}`}>{s.label}</span>
+                  </td>
+                  <td className="py-1.5">
+                    <input
+                      value={m.note}
+                      onChange={(e) => updateMilestone(m.id, "note", e.target.value)}
+                      className="w-full border border-slate-200 rounded-md px-1.5 py-1 text-xs"
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 간트차트 */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <p className="text-xs text-slate-500 mb-3">간트차트</p>
+        <div className="relative">
+          {/* 월 눈금 */}
+          <div className="relative h-5 mb-1 text-[10px] text-slate-400">
+            {monthTicks.map((d, i) => (
+              <span
+                key={i}
+                className="absolute -translate-x-1/2"
+                style={{ left: `${pct(d)}%` }}
+              >
+                {d.getMonth() + 1}월
+              </span>
+            ))}
+          </div>
+          <div className="space-y-2">
+            {milestones.map((m) => {
+              const ps = toDate(m.planStart);
+              const pe = toDate(m.planEnd);
+              const as_ = toDate(m.actualStart);
+              const ae = toDate(m.actualEnd || m.actualStart);
+              return (
+                <div key={m.id} className="flex items-center gap-3">
+                  <span className="w-40 shrink-0 text-xs text-slate-600 truncate" title={m.name}>
+                    {m.name}
+                  </span>
+                  <div className="relative flex-1 h-6 bg-slate-50 rounded-md border border-slate-200">
+                    {ps && pe && pe >= ps && (
+                      <div
+                        className="absolute top-0.5 h-5 rounded bg-indigo-200"
+                        style={{ left: `${pct(ps)}%`, width: `${Math.max(0.6, pct(pe) - pct(ps))}%` }}
+                        title="계획기간"
+                      />
+                    )}
+                    {as_ && ae && ae >= as_ && (
+                      <div
+                        className="absolute top-0.5 h-5 rounded bg-teal-400"
+                        style={{ left: `${pct(as_)}%`, width: `${Math.max(0.6, pct(ae) - pct(as_))}%` }}
+                        title="실제 진행기간"
+                      />
+                    )}
+                    {todayPct !== null && (
+                      <div
+                        className="absolute top-0 h-6 w-0.5 bg-amber-600"
+                        style={{ left: `${todayPct}%` }}
+                        title="오늘"
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-indigo-200" />계획기간</span>
+          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-teal-400" />실제 진행기간</span>
+          <span className="flex items-center gap-1.5"><span className="w-0.5 h-3 bg-amber-600" />오늘</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [projectName, setProjectName] = useState("");
   const [tier, setTier] = useState(TIERS[2]);
@@ -208,6 +449,21 @@ export default function App() {
   }
 
   const [roomTypes, setRoomTypes] = useState([]);
+  const [activeTab, setActiveTab] = useState("main"); // "main" | "schedule"
+  const [scheduleStart, setScheduleStart] = useState(() => new Date().toISOString().slice(0, 10));
+  const [milestones, setMilestones] = useState(() =>
+    DEFAULT_MILESTONES.map((name) => ({
+      id: nextId(),
+      name,
+      weight: Math.round((100 / DEFAULT_MILESTONES.length) * 10) / 10,
+      planStart: "",
+      planEnd: "",
+      actualStart: "",
+      actualEnd: "",
+      progress: 0,
+      note: "",
+    }))
+  );
   const [showFloorPlan, setShowFloorPlan] = useState(true);
   const [floorPlanAutoOffApplied, setFloorPlanAutoOffApplied] = useState(false);
 
@@ -589,6 +845,20 @@ export default function App() {
     setLaborExpenses([]);
     setExtraExpenses([]);
     setBasicPreset(DEFAULT_BASIC_PRESET.map((name) => ({ id: nextId(), name })));
+    setScheduleStart(new Date().toISOString().slice(0, 10));
+    setMilestones(
+      DEFAULT_MILESTONES.map((name) => ({
+        id: nextId(),
+        name,
+        weight: Math.round((100 / DEFAULT_MILESTONES.length) * 10) / 10,
+        planStart: "",
+        planEnd: "",
+        actualStart: "",
+        actualEnd: "",
+        progress: 0,
+        note: "",
+      }))
+    );
     setLastSaved(null);
   }
 
@@ -609,6 +879,8 @@ export default function App() {
     if (data.laborExpenses) setLaborExpenses(data.laborExpenses);
     if (data.extraExpenses) setExtraExpenses(data.extraExpenses);
     if (data.basicPreset) setBasicPreset(data.basicPreset);
+    if (data.scheduleStart) setScheduleStart(data.scheduleStart);
+    if (data.milestones) setMilestones(data.milestones);
     if (data.savedAt) setLastSaved(data.savedAt);
     idCounter = Math.max(idCounter, maxIdIn(data) + 1);
   }
@@ -694,6 +966,8 @@ export default function App() {
         laborExpenses,
         extraExpenses,
         basicPreset,
+        scheduleStart,
+        milestones,
         savedAt: new Date().toISOString(),
       };
       const result = await saveProjectData(currentProjectId, payload);
@@ -1112,6 +1386,37 @@ export default function App() {
           </p>
         )}
 
+        {/* Tab navigation */}
+        <div className="flex gap-2 no-print">
+          {[
+            { key: "main", label: "발주 관리" },
+            { key: "schedule", label: "공정표" },
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              className={`text-sm px-4 py-2 rounded-lg border ${
+                activeTab === t.key
+                  ? "bg-amber-700 text-white border-amber-700"
+                  : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "schedule" && (
+          <ScheduleTab
+            scheduleStart={scheduleStart}
+            setScheduleStart={setScheduleStart}
+            milestones={milestones}
+            setMilestones={setMilestones}
+          />
+        )}
+
+        {activeTab === "main" && (
+          <>
         {/* Header / project */}
         <div className="bg-white border border-slate-200 rounded-xl p-6">
           <div className="flex items-center gap-2 mb-4 text-slate-500">
@@ -2625,6 +2930,8 @@ export default function App() {
               </div>
             );
           })()}
+          </>
+        )}
       </div>
     </div>
   );
