@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard } from "lucide-react";
 import {
@@ -24,28 +24,44 @@ const CATEGORY_COLORS = [
 ];
 const CHART_COLORS = ["#818cf8", "#2dd4bf", "#fb7185", "#fbbf24", "#38bdf8", "#a78bfa"];
 
-const DEFAULT_MILESTONES = [
-  "룸타입 책정",
-  "예산안 확정",
-  "집기(FF&E/OS&E) 확정",
-  "발주 일정",
-  "현장 투입 ~ 오픈바이징(촬영 포함)",
-  "운영사 인계",
+// 공정표 — 공정별 레인 (발주관리 탭 대분류와 맞춤)
+const SCHED_CATS = ["기획", "가구", "가전", "린넨", "현장"];
+const SCHED_CAT_DOT = { 기획: "#A79CEE", 가구: "#7F77DD", 가전: "#5DCAA5", 린넨: "#E0A857", 현장: "#0F6E56" };
+const SCHED_STATUSES = ["시작전", "진행중", "확인필요", "완료"];
+const DEFAULT_SCHEDULE_ITEMS = [
+  { name: "룸타입 확정", cat: "기획" },
+  { name: "예산안 확정", cat: "기획" },
+  { name: "FF&E 품목 확정", cat: "가구" },
+  { name: "OS&E 품목 확정", cat: "린넨" },
+  { name: "가구 발주", cat: "가구" },
+  { name: "가전 발주", cat: "가전" },
+  { name: "린넨 발주", cat: "린넨" },
+  { name: "가구 입고/설치", cat: "가구" },
+  { name: "가전 입고/설치", cat: "가전" },
+  { name: "스타일링", cat: "현장" },
+  { name: "촬영", cat: "현장" },
+  { name: "운영사 인계", cat: "현장" },
 ];
+function makeDefaultScheduleItems() {
+  return DEFAULT_SCHEDULE_ITEMS.map((it) => ({
+    id: nextId(),
+    name: it.name,
+    cat: it.cat,
+    status: "시작전",
+    delay: false,
+    dueDate: null,
+    workStart: null,
+    workEnd: null,
+    assignee: "",
+    memo: "",
+  }));
+}
 
 function toDate(s) {
   return s ? new Date(s + "T00:00:00") : null;
 }
 function daysBetween(a, b) {
   return (b - a) / (1000 * 60 * 60 * 24);
-}
-function fmtDate(d) {
-  return d.toISOString().slice(0, 10);
-}
-function addDays(d, n) {
-  const nd = new Date(d);
-  nd.setDate(nd.getDate() + n);
-  return nd;
 }
 
 const DEFAULT_BASIC_PRESET = [
@@ -195,219 +211,620 @@ function ExpenseSection({ title, items, onAdd, onUpdate, onRemove }) {
   );
 }
 
-function ScheduleTab({ scheduleStart, setScheduleStart, milestones, setMilestones }) {
-  function updateMilestone(id, field, value) {
-    setMilestones((prev) =>
-      prev.map((m) =>
-        m.id === id
-          ? { ...m, [field]: field === "progress" || field === "weight" ? Math.max(0, parseFloat(value || "0") || 0) : value }
-          : m
-      )
+function fmtLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+const SCHED_LEFT_COL = 220;
+const SCHED_PX_PER_DAY = { month: 3.6, week: 11, day: 30 };
+
+function schedPx(d, rangeStart, pxPerDay) {
+  return daysBetween(rangeStart, d) * pxPerDay;
+}
+function schedItemRange(it, today) {
+  if (!it.workStart) return null;
+  const start = toDate(it.workStart);
+  const end = it.workEnd ? toDate(it.workEnd) : today;
+  return { start, end, inprog: !it.workEnd };
+}
+function schedFindOverlaps(items, today) {
+  const ranges = items.map((it) => ({ it, r: schedItemRange(it, today) })).filter((x) => x.r);
+  const points = [];
+  for (let i = 0; i < ranges.length; i++) {
+    for (let j = i + 1; j < ranges.length; j++) {
+      const a = ranges[i], b = ranges[j];
+      if (a.it.cat === b.it.cat) continue;
+      const s = a.r.start > b.r.start ? a.r.start : b.r.start;
+      const e = a.r.end < b.r.end ? a.r.end : b.r.end;
+      if (s <= e) points.push(s);
+    }
+  }
+  return points;
+}
+function schedProjectProgress(items) {
+  const total = items.length, done = items.filter((i) => i.status === "완료").length;
+  return total ? (done / total) * 100 : 0;
+}
+function schedExpectedProgress(start, target, today) {
+  const s = toDate(start), t = toDate(target);
+  if (!s || !t || t <= s) return 100;
+  const el = Math.max(0, Math.min(t - s, today - s));
+  return (el / (t - s)) * 100;
+}
+function schedIsDelayed(items, start, target, today) {
+  return schedExpectedProgress(start, target, today) - schedProjectProgress(items) >= 20 || items.some((i) => i.delay);
+}
+function schedDdayLabel(target, today) {
+  const t = toDate(target);
+  if (!t) return "";
+  const d = Math.round(daysBetween(today, t));
+  return d >= 0 ? `D-${d}` : `D+${-d}`;
+}
+function schedGetFullRange(projects, today) {
+  const years = [today.getFullYear()];
+  projects.forEach((p) => {
+    const s = toDate(p.start), t = toDate(p.target);
+    if (s) years.push(s.getFullYear());
+    if (t) years.push(t.getFullYear());
+  });
+  const minY = Math.min(...years) - 1;
+  const maxY = Math.max(...years) + 1;
+  return [new Date(minY, 0, 1), new Date(maxY + 1, 0, 1)];
+}
+function schedTooltipLines(it, today) {
+  const r = schedItemRange(it, today);
+  const lines = [`${it.name} (${it.cat})`, `${it.workStart || "?"} ~ ${it.workEnd || (r && r.inprog ? "진행중" : "?")}`, `상태: ${it.status}`];
+  if (it.dueDate) lines.push(`계획 종료: ${it.dueDate}`);
+  if (it.assignee) lines.push(`담당자: ${it.assignee}`);
+  const isDelayedItem = it.delay || it.status === "확인필요";
+  if (isDelayedItem) lines.push(`🚩 ${it.memo || "지연"}`);
+  else if (it.memo) lines.push(`메모: ${it.memo}`);
+  return lines;
+}
+function schedSegClass(status) {
+  if (status === "확인필요") return "sp-segst-check";
+  if (status === "완료") return "sp-segst-done";
+  return "sp-segst-progress";
+}
+
+const SP_STYLE = `
+.sp-root{--sp-bg:#F7F7F5;--sp-surface:#FFFFFF;--sp-surface-2:#FBFBFA;--sp-border:#E3E1DC;--sp-border-strong:#CFCCC5;--sp-text:#1F1E1C;--sp-text-secondary:#5B5952;--sp-text-muted:#8B8880;--sp-accent:#0F6E56;--sp-accent-bg:#E7F3EF;--sp-accent-text:#0F6E56;--sp-danger:#E5484D;--sp-danger-bg:#FBEAEA;--sp-progress:#3B82F6;--sp-check:#E5484D;--sp-done:#12805C;font-size:14px;color:var(--sp-text)}
+.sp-root *{box-sizing:border-box}
+.sp-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.sp-zoombtns{display:flex;border:1px solid var(--sp-border);border-radius:8px;overflow:hidden}
+.sp-zoombtns button{padding:6px 14px;font-size:12.5px;border:none;background:transparent;color:var(--sp-text-secondary);cursor:pointer;font-family:inherit;border-left:1px solid var(--sp-border)}
+.sp-zoombtns button:first-child{border-left:none}
+.sp-zoombtns button.active{background:var(--sp-accent-bg);color:var(--sp-accent-text);font-weight:600}
+.sp-todaybtn,.sp-chk,.sp-modebtn{background:var(--sp-surface);border:1px solid var(--sp-border);color:var(--sp-text-secondary);padding:6px 12px;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit}
+.sp-modebtn{color:var(--sp-text);font-weight:600;border-color:var(--sp-border-strong)}
+.sp-chk.active{background:var(--sp-text);color:#fff;border-color:var(--sp-text)}
+.sp-addbtn{margin-left:auto;background:var(--sp-text);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.sp-addbtn:hover{opacity:.85}
+.sp-filterbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;font-size:11.5px;color:var(--sp-text-secondary)}
+.sp-catchip{padding:4px 10px;border-radius:99px;border:1px solid var(--sp-border);cursor:pointer;background:#fff;font-size:11.5px;display:inline-flex;align-items:center;gap:5px}
+.sp-catchip.sp-off{opacity:.35}
+.sp-dot{width:8px;height:8px;border-radius:2px;display:inline-block}
+.sp-legend{display:flex;align-items:center;gap:12px;font-size:11.5px;color:var(--sp-text-secondary);flex-wrap:wrap;margin-bottom:12px}
+.sp-legend span{display:flex;align-items:center;gap:4px}
+.sp-hatch{background:var(--sp-danger);background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.4) 0 3px,transparent 3px 6px)}
+.sp-diamond-legend{display:inline-block;width:9px;height:9px;background:#B8862E;transform:rotate(45deg)}
+.sp-todaydot{width:2px;height:10px;background:var(--sp-danger);display:inline-block}
+.sp-board{border:1px solid var(--sp-border);border-radius:12px;overflow:hidden;background:var(--sp-surface-2);margin-bottom:16px}
+.sp-boardscroll{overflow-x:auto;overflow-y:hidden}
+.sp-headerrow{display:grid}
+.sp-headerrow>div:first-child{border-right:1px solid var(--sp-border);background:var(--sp-surface);position:sticky;left:0;z-index:5}
+.sp-tlheader{position:relative;background:var(--sp-surface)}
+.sp-monthrow{display:flex;height:20px;border-bottom:1px solid var(--sp-border)}
+.sp-monthcell{flex-shrink:0;border-right:1px solid var(--sp-border-strong);font-size:11px;font-weight:600;color:var(--sp-text-secondary);padding:3px 0 0 6px;box-sizing:border-box}
+.sp-subrow{display:flex;height:16px;border-bottom:1px solid var(--sp-border)}
+.sp-subcell{flex-shrink:0;border-right:1px solid var(--sp-border);font-size:9px;color:var(--sp-text-muted);text-align:center;box-sizing:border-box}
+.sp-row{display:grid;border-top:1px solid var(--sp-border)}
+.sp-rowmeta{padding:12px;border-right:1px solid var(--sp-border);background:var(--sp-surface);position:sticky;left:0;z-index:5;display:flex;flex-direction:column;justify-content:center}
+.sp-rowmeta-top{display:flex;align-items:center;gap:6px}
+.sp-collapsebtn{background:none;border:none;cursor:pointer;color:var(--sp-text-muted);font-size:10px;padding:0}
+.sp-name{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+.sp-nameinput{font-size:13.5px;font-weight:700;border:1px solid var(--sp-border-strong);border-radius:5px;padding:1px 5px;width:100%;font-family:inherit;background:#fff}
+.sp-pencil{cursor:pointer;color:var(--sp-text-muted);font-size:12px}
+.sp-pctrow{display:flex;align-items:baseline;gap:6px;margin-top:4px}
+.sp-pct{font-size:19px;font-weight:800}
+.sp-meta{font-size:10.5px;color:var(--sp-text-muted);margin-top:2px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.sp-badge{font-size:10px;padding:1px 7px;border-radius:99px;font-weight:700}
+.sp-badge-delay{background:var(--sp-danger-bg);color:var(--sp-danger)}
+.sp-badge-ontrack{background:var(--sp-accent-bg);color:var(--sp-accent-text)}
+.sp-tlwrap{position:relative;padding:8px 0}
+.sp-lane{position:relative;height:28px;margin-bottom:4px}
+.sp-lane:last-child{margin-bottom:0}
+.sp-lanelabel{position:absolute;left:-2px;top:0;font-size:8.5px;color:var(--sp-text-muted);transform:translateY(-11px)}
+.sp-seg{position:absolute;top:0;height:24px;border-radius:5px;color:#fff;font-size:10.5px;font-weight:600;display:flex;align-items:center;padding:0 6px;overflow:hidden;white-space:nowrap;cursor:default;border:1.5px solid transparent}
+.sp-icotxt{display:flex;align-items:center;gap:3px;overflow:hidden;text-overflow:ellipsis}
+.sp-segst-progress{background:var(--sp-progress)}
+.sp-segst-check{background:var(--sp-check)}
+.sp-segst-done{background:var(--sp-done)}
+.sp-seg-delayed{border-color:#7A1518;box-shadow:0 0 0 1px #7A1518}
+.sp-seg-pattern{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.28) 0 5px,transparent 5px 10px)}
+.sp-seg-planned{opacity:.55;border:1.5px dashed rgba(255,255,255,.6)}
+.sp-seg-overrun{background:var(--sp-danger);background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.35) 0 5px,transparent 5px 10px);border:1.5px solid #7A1518}
+.sp-seg-collapsed{position:absolute;height:14px;border-radius:5px;background:var(--sp-border)}
+.sp-seg-collapsed-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+.sp-overlapband{position:absolute;top:-4px;bottom:-4px;width:6px;background:rgba(229,72,77,.18);border-left:1.5px dashed var(--sp-danger);border-right:1.5px dashed var(--sp-danger);z-index:2}
+.sp-overlapicon{position:absolute;top:-16px;font-size:11px;transform:translateX(-50%)}
+.sp-todayline{position:absolute;top:0;bottom:0;width:1.5px;background:var(--sp-danger);z-index:4}
+.sp-milestone{position:absolute;top:-4px;bottom:-4px;display:flex;flex-direction:column;align-items:center;transform:translateX(-50%);z-index:4}
+.sp-diamond{width:11px;height:11px;background:#B8862E;transform:rotate(45deg);border:1.5px solid #fff;box-shadow:0 0 0 1px #B8862E}
+.sp-mlabel{font-size:8.5px;color:#8A6416;font-weight:700;margin-top:2px;white-space:nowrap}
+.sp-addrow{padding:10px 12px;color:var(--sp-text-muted);font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:6px;border-top:1px solid var(--sp-border);background:var(--sp-surface);position:sticky;left:0;width:220px}
+.sp-addrow:hover{color:var(--sp-text)}
+.sp-detail{background:var(--sp-surface);border-top:1px solid var(--sp-border);position:sticky;left:0;overflow-x:auto;box-shadow:2px 0 10px rgba(0,0,0,.05);grid-column:1/-1}
+.sp-progresswrap{padding:12px 16px 0}
+.sp-pbar{height:5px;background:var(--sp-border);border-radius:99px;overflow:hidden}
+.sp-pfill{height:100%;background:var(--sp-accent)}
+.sp-ptext{font-size:11.5px;color:var(--sp-text-secondary);margin-bottom:6px}
+.sp-tablewrap{overflow-x:auto}
+table.sp-mstable{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+table.sp-mstable th{background:#123B32;color:#fff;font-weight:600;text-align:left;padding:8px 10px;font-size:11px;white-space:nowrap}
+table.sp-mstable td{padding:6px 10px;border-bottom:1px solid var(--sp-border);vertical-align:middle}
+table.sp-mstable tr:nth-child(even) td{background:#F4F3F0}
+.sp-itemname{font-weight:500;white-space:nowrap}
+.sp-catsel{font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid var(--sp-border);font-family:inherit;background:#fff}
+.sp-pill{font-size:10.5px;padding:2px 9px;border-radius:99px;font-weight:600;border:none;cursor:pointer;font-family:inherit}
+.sp-pillst-시작전{background:#EAE8E3;color:#7A776E}
+.sp-pillst-진행중{background:#DCEAFB;color:#1D5FCC}
+.sp-pillst-확인필요{background:var(--sp-danger-bg);color:var(--sp-danger)}
+.sp-pillst-완료{background:#E3F5E9;color:#15803D}
+.sp-datein{font-size:11px;padding:3px 5px;border:1px solid var(--sp-border);border-radius:5px;font-family:inherit;width:120px}
+.sp-w70{width:70px}
+.sp-w130{width:130px}
+.sp-addmsrow{display:flex;gap:8px;padding:10px 16px 14px;flex-wrap:wrap;align-items:center}
+.sp-addmsrow input,.sp-addmsrow select{padding:5px 8px;border:1px solid var(--sp-border);border-radius:6px;font-size:11.5px;font-family:inherit}
+.sp-addmsrow button{padding:6px 12px;border-radius:6px;border:none;background:var(--sp-accent);color:#fff;font-size:11.5px;cursor:pointer;font-family:inherit}
+.sp-formrow{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:14px 16px;background:var(--sp-surface);border:1px solid var(--sp-border);border-radius:10px;margin-bottom:12px}
+.sp-formrow label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--sp-text-secondary)}
+.sp-formrow input,.sp-formrow select{padding:6px 8px;border:1px solid var(--sp-border);border-radius:6px;font-size:12.5px;font-family:inherit}
+.sp-formrow button{padding:7px 14px;border-radius:6px;border:none;background:var(--sp-text);color:#fff;font-size:12.5px;cursor:pointer;font-family:inherit}
+.sp-empty{padding:40px;text-align:center;color:var(--sp-text-muted);font-size:13px}
+.sp-delcell{text-align:center}
+.sp-rmbtn{background:none;border:none;color:var(--sp-text-muted);cursor:pointer;font-size:12px}
+.sp-rmbtn:hover{color:var(--sp-danger)}
+.sp-tooltip{position:fixed;background:#1F1E1C;color:#fff;font-size:11.5px;padding:6px 9px;border-radius:6px;pointer-events:none;z-index:50;line-height:1.5;max-width:230px;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+.sp-editentry{margin-top:6px;font-size:10.5px;padding:3px 9px;border-radius:6px;border:1px solid var(--sp-border-strong);background:#fff;color:var(--sp-text-secondary);cursor:pointer;font-family:inherit;align-self:flex-start}
+.sp-editentry:hover{background:var(--sp-accent-bg);color:var(--sp-accent-text);border-color:var(--sp-accent)}
+`;
+
+function ScheduleTab({ projects, loading, onUpdateItem, onAddItem, onRemoveItem, onRenameProject, onAddProject }) {
+  const [zoom, setZoom] = useState("month");
+  const [delayFilter, setDelayFilter] = useState(false);
+  const [patternMode, setPatternMode] = useState(false);
+  const [viewMode, setViewMode] = useState("view"); // 'view' | 'edit'
+  const [visibleCats, setVisibleCats] = useState(() => new Set(SCHED_CATS));
+  const [expanded, setExpanded] = useState({});
+  const [laneCollapsed, setLaneCollapsed] = useState({});
+  const [editingNameId, setEditingNameId] = useState(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newProj, setNewProj] = useState({ name: "", tier: TIERS[0], start: "", target: "" });
+  const [newItemDraft, setNewItemDraft] = useState({}); // { [projectId]: {name, cat} }
+  const [tooltip, setTooltip] = useState(null);
+  const [scrollTick, setScrollTick] = useState(0);
+  const scrollRef = useRef(null);
+
+  const today = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
+
+  const visibleProjects = projects.filter((p) => !delayFilter || schedIsDelayed(p.items, p.start, p.target, today));
+  const [rangeStart, rangeEnd] = schedGetFullRange(projects, today);
+  const pxPerDay = SCHED_PX_PER_DAY[zoom];
+  const totalWidth = Math.max(0, Math.round(daysBetween(rangeStart, rangeEnd) * pxPerDay));
+  const todayPx = schedPx(today, rangeStart, pxPerDay);
+
+  useEffect(() => {
+    if (scrollTick === 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollLeft = Math.max(0, todayPx - el.clientWidth / 2 + SCHED_LEFT_COL);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollTick]);
+
+  function jumpToday() {
+    setScrollTick((t) => t + 1);
+  }
+  function changeZoom(z) {
+    setZoom(z);
+    setScrollTick((t) => t + 1);
+  }
+  function toggleCat(c) {
+    setVisibleCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+  }
+  function toggleDetail(id) {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+  function toggleLane(id) {
+    setLaneCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+  function startEditName(p) {
+    setEditingNameId(p.id);
+    setNameDraft(p.name);
+  }
+  function commitEditName(id) {
+    const v = nameDraft.trim();
+    if (v) onRenameProject(id, v);
+    setEditingNameId(null);
+  }
+  function submitNewProject() {
+    if (!newProj.name.trim() || !newProj.start || !newProj.target) {
+      alert("프로젝트명, 시작일, 오픈예정일을 입력해주세요.");
+      return;
+    }
+    onAddProject({ name: newProj.name.trim(), tier: newProj.tier, start: newProj.start, target: newProj.target });
+    setNewProj({ name: "", tier: TIERS[0], start: "", target: "" });
+    setShowAddForm(false);
+  }
+  function submitNewItem(projectId) {
+    const draft = newItemDraft[projectId] || { name: "", cat: SCHED_CATS[0] };
+    if (!draft.name.trim()) return;
+    onAddItem(projectId, draft.name.trim(), draft.cat || SCHED_CATS[0]);
+    setNewItemDraft((prev) => ({ ...prev, [projectId]: { name: "", cat: draft.cat || SCHED_CATS[0] } }));
+  }
+  function showTooltip(e, lines) {
+    setTooltip({ x: e.clientX + 12, y: e.clientY + 12, lines });
+  }
+  function moveTooltip(e) {
+    setTooltip((prev) => (prev ? { ...prev, x: e.clientX + 12, y: e.clientY + 12 } : prev));
+  }
+  function hideTooltip() {
+    setTooltip(null);
+  }
+
+  function renderTimelineHeader() {
+    const months = [];
+    let cur = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+    while (cur < rangeEnd) {
+      const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      months.push({
+        key: `${cur.getFullYear()}-${cur.getMonth()}`,
+        label: `${cur.getFullYear()}.${String(cur.getMonth() + 1).padStart(2, "0")}`,
+        w: daysBetween(cur, next) * pxPerDay,
+      });
+      cur = next;
+    }
+    const subTicks = [];
+    if (zoom === "week") {
+      let wc = new Date(rangeStart);
+      while (wc < rangeEnd) {
+        subTicks.push({ key: fmtLocalDate(wc), label: `${wc.getMonth() + 1}/${wc.getDate()}`, w: 7 * pxPerDay });
+        wc = new Date(wc.getTime() + 7 * 86400000);
+      }
+    } else if (zoom === "day") {
+      let dc = new Date(rangeStart);
+      while (dc < rangeEnd) {
+        subTicks.push({ key: fmtLocalDate(dc), label: `${dc.getDate()}`, w: pxPerDay });
+        dc = new Date(dc.getTime() + 86400000);
+      }
+    }
+    return (
+      <div className="sp-tlheader" style={{ width: totalWidth }}>
+        <div className="sp-monthrow">
+          {months.map((m) => (
+            <div key={m.key} className="sp-monthcell" style={{ width: m.w }}>{m.label}</div>
+          ))}
+        </div>
+        {subTicks.length > 0 && (
+          <div className="sp-subrow">
+            {subTicks.map((t) => (
+              <div key={t.key} className="sp-subcell" style={{ width: t.w }}>{t.label}</div>
+            ))}
+          </div>
+        )}
+        <div className="sp-todayline" style={{ left: todayPx }} />
+      </div>
     );
   }
 
-  const totalWeight = milestones.reduce((s, m) => s + m.weight, 0) || 1;
-  const overallProgress = milestones.reduce((s, m) => s + m.weight * m.progress, 0) / totalWeight;
+  function renderSegment(it) {
+    const r = schedItemRange(it, today);
+    if (!r) return null;
+    const actLeft = schedPx(r.start, rangeStart, pxPerDay);
+    const actRight = schedPx(r.end, rangeStart, pxPerDay);
+    const isDelayedItem = it.delay || it.status === "확인필요";
+    const planned = it.dueDate ? toDate(it.dueDate) : null;
+    const lines = schedTooltipLines(it, today);
+    const handlers = {
+      onMouseEnter: (e) => showTooltip(e, lines),
+      onMouseMove: moveTooltip,
+      onMouseLeave: hideTooltip,
+    };
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  function statusOf(m) {
-    if (m.progress >= 100) return { label: "완료", color: "text-emerald-700 bg-emerald-50" };
-    const planEnd = toDate(m.planEnd);
-    const planStart = toDate(m.planStart);
-    if (planEnd && today > planEnd) return { label: "지연", color: "text-rose-700 bg-rose-50" };
-    if (planStart && today >= planStart) return { label: "진행중", color: "text-amber-700 bg-amber-50" };
-    return { label: "예정", color: "text-slate-500 bg-slate-100" };
-  }
-
-  // 간트 표시 범위 계산
-  const allDates = [];
-  const base = toDate(scheduleStart);
-  if (base) allDates.push(base);
-  milestones.forEach((m) => {
-    [m.planStart, m.planEnd, m.actualStart, m.actualEnd].forEach((s) => {
-      const d = toDate(s);
-      if (d) allDates.push(d);
-    });
-  });
-  const minDate = allDates.length ? new Date(Math.min(...allDates)) : today;
-  const maxDateRaw = allDates.length ? new Date(Math.max(...allDates)) : addDays(today, 180);
-  const maxDate = addDays(maxDateRaw, 7);
-  const totalDays = Math.max(1, daysBetween(minDate, maxDate));
-
-  const pct = (d) => (Math.max(0, Math.min(totalDays, daysBetween(minDate, d))) / totalDays) * 100;
-
-  // 월 단위 눈금
-  const monthTicks = [];
-  {
-    let cursor = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
-    while (cursor <= maxDate) {
-      if (cursor >= minDate) monthTicks.push(new Date(cursor));
-      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    if (planned && planned > r.start) {
+      const planLeft = actLeft, planRight = schedPx(planned, rangeStart, pxPerDay);
+      const showOverrun = actRight > planRight + 1;
+      return [
+        <div key={it.id} className={`sp-seg sp-seg-planned ${schedSegClass(it.status)}`} style={{ left: planLeft, width: Math.max(planRight - planLeft, 4) }} {...handlers}>
+          <span className="sp-icotxt">{it.name}</span>
+        </div>,
+        showOverrun && (
+          <div key={it.id + "_o"} className="sp-seg sp-seg-overrun" style={{ left: planRight, width: Math.max(actRight - planRight, 4) }} {...handlers} />
+        ),
+      ];
     }
-  }
-  const todayPct = today >= minDate && today <= maxDate ? pct(today) : null;
-
-  return (
-    <div className="space-y-8">
-      <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <div className="flex items-center justify-between flex-wrap gap-4 mb-2">
-          <div className="flex items-center gap-3">
-            <Building2 size={18} className="text-slate-500" />
-            <span className="text-sm font-medium tracking-wide text-slate-500">프로젝트 공정표</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <label className="text-xs text-slate-500">프로젝트 시작일</label>
-            <input
-              type="date"
-              value={scheduleStart}
-              onChange={(e) => setScheduleStart(e.target.value)}
-              className="border border-slate-300 rounded-lg px-2 py-1 text-sm"
-            />
-          </div>
-          <div className="text-right">
-            <p className="text-[11px] text-slate-500">전체 공정률</p>
-            <p className="text-2xl font-bold text-slate-800">{overallProgress.toFixed(1)}%</p>
-          </div>
-        </div>
-        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-amber-600 rounded-full transition-all"
-            style={{ width: `${Math.min(100, overallProgress)}%` }}
-          />
-        </div>
+    const width = Math.max(actRight - actLeft, 4);
+    const showText = width > 46;
+    return (
+      <div
+        key={it.id}
+        className={`sp-seg ${schedSegClass(it.status)} ${isDelayedItem ? "sp-seg-delayed" : ""} ${patternMode ? "sp-seg-pattern" : ""}`}
+        style={{ left: actLeft, width }}
+        {...handlers}
+      >
+        <span className="sp-icotxt">{isDelayedItem ? "🚩 " : ""}{showText ? it.name : ""}</span>
       </div>
+    );
+  }
 
-      {/* 마일스톤 표 */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 overflow-x-auto">
-        <table className="w-full text-sm min-w-[900px]">
-          <thead>
-            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2 font-normal">마일스톤</th>
-              <th className="py-2 font-normal text-right">가중치</th>
-              <th className="py-2 font-normal text-center">계획시작</th>
-              <th className="py-2 font-normal text-center">계획종료</th>
-              <th className="py-2 font-normal text-center">실제시작</th>
-              <th className="py-2 font-normal text-center">실제종료</th>
-              <th className="py-2 font-normal text-center">진행률</th>
-              <th className="py-2 font-normal text-center">상태</th>
-              <th className="py-2 font-normal">비고</th>
-            </tr>
-          </thead>
-          <tbody>
-            {milestones.map((m) => {
-              const s = statusOf(m);
-              return (
-                <tr key={m.id} className="border-b border-slate-100">
-                  <td className="py-1.5 pr-2 font-medium text-slate-700 whitespace-nowrap">{m.name}</td>
-                  <td className="py-1.5">
-                    <input
-                      type="number"
-                      min="0"
-                      value={m.weight}
-                      onChange={(e) => updateMilestone(m.id, "weight", e.target.value)}
-                      className="w-14 text-right border border-slate-200 rounded-md px-1.5 py-1 text-xs"
-                    />
+  function renderDetail(p) {
+    const items = p.items || [];
+    const prog = Math.round(schedProjectProgress(items));
+    const draft = newItemDraft[p.id] || { name: "", cat: SCHED_CATS[0] };
+    return (
+      <div className="sp-detail">
+        <div className="sp-progresswrap">
+          <div className="sp-ptext">전체 진행률 {prog}% (기대치 {Math.round(schedExpectedProgress(p.start, p.target, today))}%)</div>
+          <div className="sp-pbar"><div className="sp-pfill" style={{ width: `${prog}%` }} /></div>
+        </div>
+        <div className="sp-tablewrap">
+          <table className="sp-mstable">
+            <thead>
+              <tr>
+                <th>항목</th><th>카테고리</th><th>Status</th><th>Delay</th>
+                <th>계획 종료일</th><th>실제 시작일</th><th>실제 종료일</th>
+                <th>담당자</th><th>메모</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td className="sp-itemname">{it.name}</td>
+                  <td>
+                    <select className="sp-catsel" value={it.cat} onChange={(e) => onUpdateItem(p.id, it.id, "cat", e.target.value)}>
+                      {SCHED_CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </td>
-                  {["planStart", "planEnd", "actualStart", "actualEnd"].map((f) => (
-                    <td key={f} className="py-1.5 px-1">
-                      <input
-                        type="date"
-                        value={m[f]}
-                        onChange={(e) => updateMilestone(m.id, f, e.target.value)}
-                        className="border border-slate-200 rounded-md px-1 py-1 text-xs w-[118px]"
-                      />
-                    </td>
-                  ))}
-                  <td className="py-1.5">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={m.progress}
-                      onChange={(e) => updateMilestone(m.id, "progress", e.target.value)}
-                      className="w-14 text-right border border-slate-200 rounded-md px-1.5 py-1 text-xs"
-                    />
+                  <td>
+                    <select className={`sp-pill sp-pillst-${it.status}`} value={it.status} onChange={(e) => onUpdateItem(p.id, it.id, "status", e.target.value)}>
+                      {SCHED_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+                    </select>
                   </td>
-                  <td className="py-1.5 text-center">
-                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded ${s.color}`}>{s.label}</span>
+                  <td className="sp-delcell">
+                    <input type="checkbox" checked={!!it.delay} onChange={(e) => onUpdateItem(p.id, it.id, "delay", e.target.checked)} />
                   </td>
-                  <td className="py-1.5">
-                    <input
-                      value={m.note}
-                      onChange={(e) => updateMilestone(m.id, "note", e.target.value)}
-                      className="w-full border border-slate-200 rounded-md px-1.5 py-1 text-xs"
-                    />
+                  <td><input type="date" className="sp-datein" value={it.dueDate || ""} onChange={(e) => onUpdateItem(p.id, it.id, "dueDate", e.target.value)} /></td>
+                  <td><input type="date" className="sp-datein" value={it.workStart || ""} onChange={(e) => onUpdateItem(p.id, it.id, "workStart", e.target.value)} /></td>
+                  <td><input type="date" className="sp-datein" value={it.workEnd || ""} onChange={(e) => onUpdateItem(p.id, it.id, "workEnd", e.target.value)} /></td>
+                  <td><input type="text" className="sp-datein sp-w70" placeholder="담당자" value={it.assignee || ""} onChange={(e) => onUpdateItem(p.id, it.id, "assignee", e.target.value)} /></td>
+                  <td><input type="text" className="sp-datein sp-w130" placeholder="메모" value={it.memo || ""} onChange={(e) => onUpdateItem(p.id, it.id, "memo", e.target.value)} /></td>
+                  <td className="sp-delcell">
+                    <button className="sp-rmbtn" onClick={() => onRemoveItem(p.id, it.id)}>삭제</button>
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="sp-addmsrow">
+          <input
+            placeholder="새 항목명"
+            style={{ width: 160 }}
+            value={draft.name}
+            onChange={(e) => setNewItemDraft((prev) => ({ ...prev, [p.id]: { ...draft, name: e.target.value } }))}
+            onKeyDown={(e) => e.key === "Enter" && submitNewItem(p.id)}
+          />
+          <select value={draft.cat} onChange={(e) => setNewItemDraft((prev) => ({ ...prev, [p.id]: { ...draft, cat: e.target.value } }))}>
+            {SCHED_CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button onClick={() => submitNewItem(p.id)}>+ 항목 추가</button>
+        </div>
       </div>
+    );
+  }
 
-      {/* 간트차트 */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6">
-        <p className="text-xs text-slate-500 mb-3">간트차트</p>
-        <div className="relative">
-          {/* 월 눈금 */}
-          <div className="relative h-5 mb-1 text-[10px] text-slate-400">
-            {monthTicks.map((d, i) => (
-              <span
-                key={i}
-                className="absolute -translate-x-1/2"
-                style={{ left: `${pct(d)}%` }}
-              >
-                {d.getMonth() + 1}월
-              </span>
-            ))}
+  function renderProjectRow(p) {
+    const items = p.items || [];
+    const delayed = schedIsDelayed(items, p.start, p.target, today);
+    const collapsed = !!laneCollapsed[p.id];
+    const lanes = SCHED_CATS.filter((c) => visibleCats.has(c) && items.some((it) => it.cat === c));
+    const laneH = 32;
+    const targetDate = p.target ? toDate(p.target) : null;
+    const targetPx = targetDate ? schedPx(targetDate, rangeStart, pxPerDay) : null;
+    const progress = schedProjectProgress(items);
+    const overlaps = collapsed ? [] : schedFindOverlaps(items, today);
+    const startDate = p.start ? toDate(p.start) : null;
+    const collapsedLeft = startDate ? schedPx(startDate, rangeStart, pxPerDay) : 0;
+    const collapsedRight = targetPx !== null ? targetPx : collapsedLeft;
+
+    return (
+      <div key={p.id} className="sp-row" style={{ gridTemplateColumns: `${SCHED_LEFT_COL}px ${totalWidth}px` }}>
+        <div className="sp-rowmeta">
+          <div className="sp-rowmeta-top">
+            <button className="sp-collapsebtn" onClick={() => toggleLane(p.id)}>{collapsed ? "▶" : "▼"}</button>
+            {editingNameId === p.id ? (
+              <input
+                autoFocus
+                className="sp-nameinput"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={() => commitEditName(p.id)}
+                onKeyDown={(e) => e.key === "Enter" && commitEditName(p.id)}
+              />
+            ) : (
+              <div className="sp-name">
+                {p.name || "(이름 없음)"}
+                {viewMode === "edit" && <span className="sp-pencil" onClick={() => startEditName(p)}>✎</span>}
+              </div>
+            )}
           </div>
-          <div className="space-y-2">
-            {milestones.map((m) => {
-              const ps = toDate(m.planStart);
-              const pe = toDate(m.planEnd);
-              const as_ = toDate(m.actualStart);
-              const ae = toDate(m.actualEnd || m.actualStart);
-              return (
-                <div key={m.id} className="flex items-center gap-3">
-                  <span className="w-40 shrink-0 text-xs text-slate-600 truncate" title={m.name}>
-                    {m.name}
-                  </span>
-                  <div className="relative flex-1 h-6 bg-slate-50 rounded-md border border-slate-200">
-                    {ps && pe && pe >= ps && (
-                      <div
-                        className="absolute top-0.5 h-5 rounded bg-indigo-200"
-                        style={{ left: `${pct(ps)}%`, width: `${Math.max(0.6, pct(pe) - pct(ps))}%` }}
-                        title="계획기간"
-                      />
-                    )}
-                    {as_ && ae && ae >= as_ && (
-                      <div
-                        className="absolute top-0.5 h-5 rounded bg-teal-400"
-                        style={{ left: `${pct(as_)}%`, width: `${Math.max(0.6, pct(ae) - pct(as_))}%` }}
-                        title="실제 진행기간"
-                      />
-                    )}
-                    {todayPct !== null && (
-                      <div
-                        className="absolute top-0 h-6 w-0.5 bg-amber-600"
-                        style={{ left: `${todayPct}%` }}
-                        title="오늘"
-                      />
-                    )}
+          <div className="sp-pctrow">
+            <span className="sp-pct" style={{ color: delayed ? "var(--sp-check)" : "var(--sp-done)" }}>{Math.round(progress)}%</span>
+            <span className={`sp-badge ${delayed ? "sp-badge-delay" : "sp-badge-ontrack"}`}>{delayed ? "🚩 지연" : "정상"}</span>
+          </div>
+          <div className="sp-meta">{p.tier || ""} · {schedDdayLabel(p.target, today)}</div>
+          {viewMode === "edit" && (
+            <button className="sp-editentry" onClick={() => toggleDetail(p.id)}>
+              {expanded[p.id] ? "▲ 접기" : "📝 상세 일정 입력"}
+            </button>
+          )}
+        </div>
+        <div
+          className="sp-tlwrap"
+          style={{ width: totalWidth, minHeight: collapsed ? 40 : Math.max(lanes.length * laneH, 40) + 16 }}
+        >
+          {!collapsed
+            ? lanes.map((cat) => (
+                <div className="sp-lane" key={cat}>
+                  <div className="sp-lanelabel">{cat}</div>
+                  {items.filter((it) => it.cat === cat).map((it) => renderSegment(it))}
+                </div>
+              ))
+            : (
+                <div className="sp-lane" style={{ height: 14 }}>
+                  <div className="sp-seg-collapsed" style={{ left: collapsedLeft, width: Math.max(collapsedRight - collapsedLeft, 4) }}>
+                    <div className="sp-seg-collapsed-fill" style={{ width: `${progress}%`, background: delayed ? "var(--sp-check)" : "var(--sp-done)" }} />
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              )}
+          {overlaps.map((d, i) => (
+            <div
+              key={`ob_${i}`}
+              className="sp-overlapband"
+              style={{ left: schedPx(d, rangeStart, pxPerDay) - 3 }}
+              onMouseEnter={(e) => showTooltip(e, [`${fmtLocalDate(d)} 공정 겹침`])}
+              onMouseMove={moveTooltip}
+              onMouseLeave={hideTooltip}
+            />
+          ))}
+          {overlaps.map((d, i) => (
+            <div key={`oi_${i}`} className="sp-overlapicon" style={{ left: schedPx(d, rangeStart, pxPerDay) }}>⚡</div>
+          ))}
+          <div className="sp-todayline" style={{ left: todayPx, opacity: 0.4 }} />
+          {targetPx !== null && (
+            <div
+              className="sp-milestone"
+              style={{ left: targetPx }}
+              onMouseEnter={(e) => showTooltip(e, [`오픈예정일 ${p.target} (${schedDdayLabel(p.target, today)})`])}
+              onMouseMove={moveTooltip}
+              onMouseLeave={hideTooltip}
+            >
+              <div className="sp-diamond" />
+              <div className="sp-mlabel">오픈</div>
+            </div>
+          )}
         </div>
-        <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-slate-500">
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-indigo-200" />계획기간</span>
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-teal-400" />실제 진행기간</span>
-          <span className="flex items-center gap-1.5"><span className="w-0.5 h-3 bg-amber-600" />오늘</span>
-        </div>
+        {viewMode === "edit" && expanded[p.id] && renderDetail(p)}
       </div>
+    );
+  }
+
+  return (
+    <div className="sp-root">
+      <style>{SP_STYLE}</style>
+      <div className="sp-toolbar">
+        <div className="sp-zoombtns">
+          {[["month", "월"], ["week", "주"], ["day", "일"]].map(([z, label]) => (
+            <button key={z} className={zoom === z ? "active" : ""} onClick={() => changeZoom(z)}>{label}</button>
+          ))}
+        </div>
+        <button className="sp-todaybtn" onClick={jumpToday}>오늘로 이동</button>
+        <button className={`sp-chk ${delayFilter ? "active" : ""}`} onClick={() => setDelayFilter((v) => !v)}>🚩 지연만 보기</button>
+        <button className={`sp-chk ${patternMode ? "active" : ""}`} onClick={() => setPatternMode((v) => !v)}>🎨 패턴 표시(색약 모드)</button>
+        <button
+          className="sp-modebtn"
+          onClick={() => {
+            setViewMode((v) => (v === "view" ? "edit" : "view"));
+            if (viewMode === "edit") setExpanded({});
+          }}
+        >
+          {viewMode === "view" ? "✏️ 관리자 뷰로 전환" : "👁️ 대시보드 뷰로 전환"}
+        </button>
+        {viewMode === "edit" && (
+          <button className="sp-addbtn" onClick={() => setShowAddForm((v) => !v)}>+ 새 프로젝트</button>
+        )}
+      </div>
+
+      <div className="sp-filterbar">
+        공정 필터:
+        {SCHED_CATS.map((c) => (
+          <span key={c} className={`sp-catchip ${visibleCats.has(c) ? "" : "sp-off"}`} onClick={() => toggleCat(c)}>
+            <span className="sp-dot" style={{ background: SCHED_CAT_DOT[c] }} />{c}
+          </span>
+        ))}
+      </div>
+
+      <div className="sp-legend">
+        <span><span className="sp-dot" style={{ background: "var(--sp-progress)" }} />진행중</span>
+        <span><span className="sp-dot" style={{ background: "var(--sp-check)" }} />확인필요</span>
+        <span><span className="sp-dot" style={{ background: "var(--sp-done)" }} />완료</span>
+        <span><span className="sp-dot" style={{ background: "var(--sp-done)", opacity: 0.55, border: "1px dashed #fff" }} />계획 구간</span>
+        <span><span className="sp-dot sp-hatch" />지연폭</span>
+        <span>🚩 지연 항목</span>
+        <span>⚡ 공정 겹침</span>
+        <span><span className="sp-diamond-legend" />오픈예정일</span>
+        <span><span className="sp-todaydot" />오늘</span>
+      </div>
+
+      {viewMode === "edit" && showAddForm && (
+        <div className="sp-formrow">
+          <label>프로젝트명<input value={newProj.name} onChange={(e) => setNewProj((p) => ({ ...p, name: e.target.value }))} /></label>
+          <label>
+            브랜드티어
+            <select value={newProj.tier} onChange={(e) => setNewProj((p) => ({ ...p, tier: e.target.value }))}>
+              {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label>시작일<input type="date" value={newProj.start} onChange={(e) => setNewProj((p) => ({ ...p, start: e.target.value }))} /></label>
+          <label>오픈예정일<input type="date" value={newProj.target} onChange={(e) => setNewProj((p) => ({ ...p, target: e.target.value }))} /></label>
+          <button onClick={submitNewProject}>추가</button>
+        </div>
+      )}
+
+      <div className="sp-board">
+        {loading ? (
+          <div className="sp-empty">불러오는 중...</div>
+        ) : (
+          <div className="sp-boardscroll" ref={scrollRef}>
+            <div className="sp-boardinner" style={{ width: SCHED_LEFT_COL + totalWidth }}>
+              {visibleProjects.length === 0 ? (
+                <div className="sp-empty">
+                  {projects.length === 0 ? '아직 프로젝트가 없어요. "+ 새 프로젝트"로 추가해보세요.' : "조건에 맞는 프로젝트가 없어요."}
+                </div>
+              ) : (
+                <>
+                  <div className="sp-headerrow" style={{ gridTemplateColumns: `${SCHED_LEFT_COL}px ${totalWidth}px` }}>
+                    <div />
+                    {renderTimelineHeader()}
+                  </div>
+                  {visibleProjects.map((p) => renderProjectRow(p))}
+                  {viewMode === "edit" && (
+                    <div className="sp-addrow" onClick={() => setShowAddForm(true)}>+ 새 프로젝트 추가</div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {tooltip && (
+        <div className="sp-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
+          {tooltip.lines.map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -451,19 +868,11 @@ export default function App() {
   const [roomTypes, setRoomTypes] = useState([]);
   const [activeTab, setActiveTab] = useState("main"); // "main" | "schedule"
   const [scheduleStart, setScheduleStart] = useState(() => new Date().toISOString().slice(0, 10));
-  const [milestones, setMilestones] = useState(() =>
-    DEFAULT_MILESTONES.map((name) => ({
-      id: nextId(),
-      name,
-      weight: Math.round((100 / DEFAULT_MILESTONES.length) * 10) / 10,
-      planStart: "",
-      planEnd: "",
-      actualStart: "",
-      actualEnd: "",
-      progress: 0,
-      note: "",
-    }))
-  );
+  const [scheduleTargetDate, setScheduleTargetDate] = useState("");
+  const [scheduleItems, setScheduleItems] = useState(() => makeDefaultScheduleItems());
+  // 공정표 탭(포트폴리오 뷰)에서 쓰는, 현재 편집 중인 프로젝트 외 나머지 프로젝트들의 캐시
+  const [scheduleProjectsCache, setScheduleProjectsCache] = useState({}); // { [projectId]: fullSavedPayload }
+  const [scheduleTabLoading, setScheduleTabLoading] = useState(false);
   const [showFloorPlan, setShowFloorPlan] = useState(true);
   const [floorPlanAutoOffApplied, setFloorPlanAutoOffApplied] = useState(false);
 
@@ -846,19 +1255,8 @@ export default function App() {
     setExtraExpenses([]);
     setBasicPreset(DEFAULT_BASIC_PRESET.map((name) => ({ id: nextId(), name })));
     setScheduleStart(new Date().toISOString().slice(0, 10));
-    setMilestones(
-      DEFAULT_MILESTONES.map((name) => ({
-        id: nextId(),
-        name,
-        weight: Math.round((100 / DEFAULT_MILESTONES.length) * 10) / 10,
-        planStart: "",
-        planEnd: "",
-        actualStart: "",
-        actualEnd: "",
-        progress: 0,
-        note: "",
-      }))
-    );
+    setScheduleTargetDate("");
+    setScheduleItems(makeDefaultScheduleItems());
     setLastSaved(null);
   }
 
@@ -880,7 +1278,8 @@ export default function App() {
     if (data.extraExpenses) setExtraExpenses(data.extraExpenses);
     if (data.basicPreset) setBasicPreset(data.basicPreset);
     if (data.scheduleStart) setScheduleStart(data.scheduleStart);
-    if (data.milestones) setMilestones(data.milestones);
+    if (data.scheduleTargetDate !== undefined) setScheduleTargetDate(data.scheduleTargetDate);
+    if (data.scheduleItems) setScheduleItems(data.scheduleItems);
     if (data.savedAt) setLastSaved(data.savedAt);
     idCounter = Math.max(idCounter, maxIdIn(data) + 1);
   }
@@ -944,32 +1343,38 @@ export default function App() {
     })();
   }, []);
 
+  function buildCurrentPayload(overrides = {}) {
+    return {
+      projectName,
+      tier,
+      totalBudget,
+      categories,
+      irregularOptions,
+      brandRoomName,
+      roomFeatures,
+      viewTypes,
+      floors,
+      roomTypes,
+      ffeItems,
+      oseItems,
+      siteExpenses,
+      laborExpenses,
+      extraExpenses,
+      basicPreset,
+      scheduleStart,
+      scheduleTargetDate,
+      scheduleItems,
+      savedAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+
   async function saveProject() {
     if (!currentProjectId) return;
     setIsSaving(true);
     setSaveError("");
     try {
-      const payload = {
-        projectName,
-        tier,
-        totalBudget,
-        categories,
-        irregularOptions,
-        brandRoomName,
-        roomFeatures,
-        viewTypes,
-        floors,
-        roomTypes,
-        ffeItems,
-        oseItems,
-        siteExpenses,
-        laborExpenses,
-        extraExpenses,
-        basicPreset,
-        scheduleStart,
-        milestones,
-        savedAt: new Date().toISOString(),
-      };
+      const payload = buildCurrentPayload();
       const result = await saveProjectData(currentProjectId, payload);
       if (!result || result.error) throw new Error(result && result.error);
       setLastSaved(payload.savedAt);
@@ -982,6 +1387,161 @@ export default function App() {
       setIsSaving(false);
     }
   }
+
+  // ---- 공정표 탭(포트폴리오 뷰): 발주관리와 프로젝트 배열을 공유하되,
+  // 현재 편집 중이 아닌 프로젝트들의 데이터는 별도 캐시로 불러온다 ----
+  async function loadScheduleProjects() {
+    const missing = projectList.filter((p) => p.id !== currentProjectId && !(p.id in scheduleProjectsCache));
+    if (missing.length === 0) return;
+    setScheduleTabLoading(true);
+    try {
+      const entries = await Promise.all(
+        missing.map(async (p) => {
+          try {
+            const data = await getProjectData(p.id);
+            return [p.id, data || {}];
+          } catch (err) {
+            return [p.id, {}];
+          }
+        })
+      );
+      setScheduleProjectsCache((prev) => {
+        const next = { ...prev };
+        entries.forEach(([id, data]) => {
+          next[id] = data;
+        });
+        return next;
+      });
+    } finally {
+      setScheduleTabLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === "schedule" && !isLoading) {
+      loadScheduleProjects();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, projectList, currentProjectId, isLoading]);
+
+  async function persistScheduleForCurrent(patch) {
+    const payload = buildCurrentPayload(patch);
+    try {
+      await saveProjectData(currentProjectId, payload);
+      setLastSaved(payload.savedAt);
+    } catch (err) {
+      setSaveError("공정표 저장에 실패했어요. 잠시 후 다시 시도해주세요.");
+    }
+  }
+
+  async function persistScheduleForProject(projectId, patch) {
+    const base = scheduleProjectsCache[projectId] || {};
+    const payload = { ...base, ...patch, savedAt: new Date().toISOString() };
+    setScheduleProjectsCache((prev) => ({ ...prev, [projectId]: payload }));
+    try {
+      await saveProjectData(projectId, payload);
+    } catch (err) {
+      setSaveError("공정표 저장에 실패했어요. 잠시 후 다시 시도해주세요.");
+    }
+  }
+
+  function updateScheduleItem(projectId, itemId, field, value) {
+    if (projectId === currentProjectId) {
+      const next = scheduleItems.map((it) => (it.id === itemId ? { ...it, [field]: value } : it));
+      setScheduleItems(next);
+      persistScheduleForCurrent({ scheduleItems: next });
+    } else {
+      const base = scheduleProjectsCache[projectId] || {};
+      const next = (base.scheduleItems || []).map((it) => (it.id === itemId ? { ...it, [field]: value } : it));
+      persistScheduleForProject(projectId, { scheduleItems: next });
+    }
+  }
+
+  function addScheduleItem(projectId, name, cat) {
+    const newItem = {
+      id: nextId(),
+      name,
+      cat,
+      status: "시작전",
+      delay: false,
+      dueDate: null,
+      workStart: null,
+      workEnd: null,
+      assignee: "",
+      memo: "",
+    };
+    if (projectId === currentProjectId) {
+      const next = [...scheduleItems, newItem];
+      setScheduleItems(next);
+      persistScheduleForCurrent({ scheduleItems: next });
+    } else {
+      const base = scheduleProjectsCache[projectId] || {};
+      const next = [...(base.scheduleItems || []), newItem];
+      persistScheduleForProject(projectId, { scheduleItems: next });
+    }
+  }
+
+  function removeScheduleItem(projectId, itemId) {
+    if (projectId === currentProjectId) {
+      const next = scheduleItems.filter((it) => it.id !== itemId);
+      setScheduleItems(next);
+      persistScheduleForCurrent({ scheduleItems: next });
+    } else {
+      const base = scheduleProjectsCache[projectId] || {};
+      const next = (base.scheduleItems || []).filter((it) => it.id !== itemId);
+      persistScheduleForProject(projectId, { scheduleItems: next });
+    }
+  }
+
+  async function renameScheduleProject(projectId, name) {
+    if (projectId === currentProjectId) {
+      setProjectName(name);
+      persistScheduleForCurrent({ projectName: name });
+    } else {
+      persistScheduleForProject(projectId, { projectName: name });
+    }
+    const updatedList = projectList.map((p) => (p.id === projectId ? { ...p, name } : p));
+    setProjectList(updatedList);
+    await saveProjectIndex(updatedList);
+  }
+
+  async function addScheduleProject({ name, tier: projTier, start, target }) {
+    const id = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const newList = [...projectList, { id, name }];
+    const payload = {
+      projectName: name,
+      tier: projTier,
+      scheduleStart: start,
+      scheduleTargetDate: target,
+      scheduleItems: makeDefaultScheduleItems(),
+      savedAt: new Date().toISOString(),
+    };
+    // 로컬 상태(프로젝트 목록 + 캐시)를 먼저 동기적으로 갱신해야
+    // loadScheduleProjects의 재조회가 빈 데이터로 캐시를 덮어쓰는 경쟁 상태를 피할 수 있다.
+    setProjectList(newList);
+    setScheduleProjectsCache((prev) => ({ ...prev, [id]: payload }));
+    try {
+      await saveProjectIndex(newList);
+      await saveProjectData(id, payload);
+    } catch (err) {
+      setSaveError("새 프로젝트 저장에 실패했어요. 잠시 후 다시 시도해주세요.");
+    }
+  }
+
+  const scheduleProjects = projectList.map((p) => {
+    const isCurrent = p.id === currentProjectId;
+    const src = isCurrent
+      ? { projectName, tier, scheduleStart, scheduleTargetDate, scheduleItems }
+      : scheduleProjectsCache[p.id] || {};
+    return {
+      id: p.id,
+      name: src.projectName || p.name || "(이름 없음)",
+      tier: src.tier || "",
+      start: src.scheduleStart || "",
+      target: src.scheduleTargetDate || "",
+      items: src.scheduleItems || [],
+    };
+  });
 
   function togglePickerItem(id) {
     setPickerSelected((prev) => {
@@ -1408,10 +1968,13 @@ export default function App() {
 
         {activeTab === "schedule" && (
           <ScheduleTab
-            scheduleStart={scheduleStart}
-            setScheduleStart={setScheduleStart}
-            milestones={milestones}
-            setMilestones={setMilestones}
+            projects={scheduleProjects}
+            loading={scheduleTabLoading}
+            onUpdateItem={updateScheduleItem}
+            onAddItem={addScheduleItem}
+            onRemoveItem={removeScheduleItem}
+            onRenameProject={renameScheduleProject}
+            onAddProject={addScheduleProject}
           />
         )}
 
