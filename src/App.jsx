@@ -256,6 +256,11 @@ function schedExpectedProgress(start, target, today) {
 function schedIsDelayed(items, start, target, today) {
   return schedExpectedProgress(start, target, today) - schedProjectProgress(items) >= 20 || items.some((i) => i.delay);
 }
+function schedTeamWorkDone(items) {
+  const shoot = items.find((it) => it.name === "촬영");
+  const handover = items.find((it) => it.name === "운영사 인계");
+  return !!(shoot && shoot.status === "완료") || !!(handover && handover.status === "완료");
+}
 function schedDdayLabel(target, today) {
   const t = toDate(target);
   if (!t) return "";
@@ -674,7 +679,10 @@ function ScheduleTab({ projects, loading, onUpdateItem, onAddItem, onRemoveItem,
             <span className="sp-pct" style={{ color: delayed ? "var(--sp-check)" : "var(--sp-done)" }}>{Math.round(progress)}%</span>
             <span className={`sp-badge ${delayed ? "sp-badge-delay" : "sp-badge-ontrack"}`}>{delayed ? "🚩 지연" : "정상"}</span>
           </div>
-          <div className="sp-meta">{p.tier || ""} · {schedDdayLabel(p.target, today)}</div>
+          <div className="sp-meta">
+            {p.tier || ""} · {schedDdayLabel(p.target, today)}
+            {schedTeamWorkDone(items) && <span className="sp-badge sp-badge-ontrack">✅ 현장 업무 완료</span>}
+          </div>
           {viewMode === "edit" && (
             <button className="sp-editentry" onClick={() => toggleDetail(p.id)}>
               {expanded[p.id] ? "▲ 접기" : "📝 상세 일정 입력"}
