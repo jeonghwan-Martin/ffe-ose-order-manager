@@ -7,6 +7,7 @@ import {
 } from "recharts";
 
 import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, getCatalog, saveCatalog } from "./api";
+import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
 const BED_TYPES = ["싱글", "퀸"];
@@ -1959,6 +1960,7 @@ export default function App() {
           {[
             { key: "main", label: "발주 관리" },
             { key: "schedule", label: "공정표" },
+            { key: "test-schedule", label: "테스트 공정표" },
           ].map((t) => (
             <button
               key={t.key}
@@ -1985,6 +1987,8 @@ export default function App() {
             onAddProject={addScheduleProject}
           />
         )}
+
+        {activeTab === "test-schedule" && <TestScheduleDashboard />}
 
         {activeTab === "main" && (
           <>
