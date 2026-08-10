@@ -64,8 +64,10 @@ function parseDate(s) {
 
 function fmt(d) {
   if (!d) return "-";
-  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(
-    d.getDate()
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return "-";
+  return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(
+    date.getDate()
   ).padStart(2, "0")}`;
 }
 
@@ -290,7 +292,7 @@ export default function ScheduleDashboard() {
               오픈바이징 공정표
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              프로젝트 {projects.length}개 · 오늘 {fmt(today)} · 미리보기(스냅샷 데이터)
+              프로젝트 {projects.length}개 · 오늘 {fmt(today)} · 테스트 배포
             </p>
           </div>
           <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
