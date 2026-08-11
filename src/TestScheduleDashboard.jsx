@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 
 // 실배포용: Supabase에서 실시간으로 데이터를 읽고, 체크박스 클릭 시 즉시 저장합니다.
 const SUPABASE_URL = "https://fsjyzehxovazlmuihxxd.supabase.co";
@@ -124,11 +124,15 @@ export default function ScheduleDashboard() {
   const [milestones, setMilestones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [zoom, setZoom] = useState("month");
+  const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
   const [hovered, setHovered] = useState(null);
   const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
+  const [rangeSelect, setRangeSelect] = useState(null); // 빈 타임라인 영역 드래그 선택(신규 일정 입력)
+  const [rangePopover, setRangePopover] = useState(null); // 드래그 선택 완료 후 마일스톤 선택 팝업
+  const rangeMovedRef = useRef(false); // 방금 실제로 드래그했는지(단순 클릭과 구분)
+  const scrollRef = useRef(null);
 
   useEffect(() => {
     fetchAll()
@@ -299,6 +303,12 @@ export default function ScheduleDashboard() {
     return daysBetween(rangeStart, date) * pxPerDay;
   }
 
+  function dateFromX(x) {
+    const d = new Date(rangeStart);
+    d.setDate(d.getDate() + Math.round(x / pxPerDay));
+    return d;
+  }
+
   function toggleExpand(id) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -341,7 +351,49 @@ export default function ScheduleDashboard() {
     };
   }, [dragState, pxPerDay]);
 
+  // 빈 타임라인 영역을 드래그로 선택 — 놓는 순간 어느 마일스톤에 적용할지 팝업으로 확인
+  useEffect(() => {
+    if (!rangeSelect) return;
+    function handleMove(evt) {
+      const x = evt.clientX - rangeSelect.containerLeft;
+      setRangeSelect((prev) =>
+        prev
+          ? { ...prev, curX: x, moved: prev.moved || Math.abs(x - prev.startX) > 4 }
+          : prev
+      );
+    }
+    function handleUp() {
+      setRangeSelect((prev) => {
+        if (prev && prev.moved) {
+          rangeMovedRef.current = true;
+          const x1 = Math.min(prev.startX, prev.curX);
+          const x2 = Math.max(prev.startX, prev.curX);
+          setRangePopover({
+            projectId: prev.projectId,
+            startDate: toDateStr(dateFromX(x1)),
+            endDate: toDateStr(dateFromX(x2)),
+          });
+        }
+        return null;
+      });
+    }
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [rangeSelect, pxPerDay]);
+
   const todayX = xFor(today);
+
+  // 줌 레벨이 바뀌거나 데이터가 로드되면 오늘 날짜가 화면 왼쪽 근처에 오도록 자동 스크롤
+  useEffect(() => {
+    if (scrollRef.current && !loading) {
+      scrollRef.current.scrollLeft = Math.max(todayX - 120, 0);
+    }
+  }, [zoom, loading, todayX]);
+
 
   if (loading) {
     return (
@@ -408,7 +460,7 @@ export default function ScheduleDashboard() {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" ref={scrollRef}>
         <div style={{ minWidth: totalWidth + 280 }}>
           <div
             className="flex border-b border-slate-200 bg-white sticky top-0 z-30"
@@ -573,7 +625,39 @@ export default function ScheduleDashboard() {
                       </div>
                     </div>
                   </div>
-                  <div className="relative flex-1" style={{ width: totalWidth, height: 62 }}>
+                  <div
+                    className="relative flex-1 cursor-crosshair"
+                    style={{ width: totalWidth, height: 62 }}
+                    onMouseDown={(evt) => {
+                      if (evt.button !== 0) return;
+                      const rect = evt.currentTarget.getBoundingClientRect();
+                      const x = evt.clientX - rect.left;
+                      setRangeSelect({
+                        projectId: p.id,
+                        containerLeft: rect.left,
+                        startX: x,
+                        curX: x,
+                        moved: false,
+                      });
+                    }}
+                    onClick={(evt) => {
+                      // 드래그로 영역을 선택한 직후엔 행 펼침 토글이 같이 발동하지 않도록 막음
+                      if (rangeMovedRef.current) {
+                        rangeMovedRef.current = false;
+                        evt.stopPropagation();
+                      }
+                    }}
+                  >
+                    {rangeSelect && rangeSelect.projectId === p.id && (
+                      <div
+                        className="absolute top-2 bg-indigo-200/50 border border-indigo-400 border-dashed rounded pointer-events-none"
+                        style={{
+                          left: Math.min(rangeSelect.startX, rangeSelect.curX),
+                          width: Math.abs(rangeSelect.curX - rangeSelect.startX),
+                          height: 24,
+                        }}
+                      />
+                    )}
                     {(zoom === "day" ? dayTicks : monthTicks).map((t, i) => (
                       <div
                         key={`grid-${i}`}
@@ -817,6 +901,56 @@ export default function ScheduleDashboard() {
           </div>
           {hovered.m.manager && <div className="text-slate-300">담당: {hovered.m.manager}</div>}
           {hovered.m.memo && <div className="text-slate-400 mt-1">{hovered.m.memo}</div>}
+        </div>
+      )}
+
+      {rangePopover && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20"
+          onClick={() => setRangePopover(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl p-4 w-[320px]"
+            onClick={(evt) => evt.stopPropagation()}
+          >
+            <div className="text-sm font-medium text-slate-800">
+              {fmt(parseDate(rangePopover.startDate))} ~ {fmt(parseDate(rangePopover.endDate))}
+            </div>
+            <div className="text-xs text-slate-500 mt-0.5 mb-3">
+              이 구간을 적용할 마일스톤을 선택하세요
+            </div>
+            <div className="space-y-1 max-h-64 overflow-y-auto">
+              {(milestonesByProject[rangePopover.projectId] || []).map((m) => {
+                const hasDate = m.actual_start_date || m.planned_start_date;
+                return (
+                  <button
+                    key={m.id}
+                    className="w-full text-left px-2.5 py-2 rounded-md hover:bg-indigo-50 text-sm text-slate-700 flex items-center justify-between"
+                    onClick={() => {
+                      updateMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
+                      updateMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
+                      saveMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
+                      saveMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
+                      setRangePopover(null);
+                    }}
+                  >
+                    <span>{m.name}</span>
+                    {hasDate && (
+                      <span className="text-[10px] text-amber-600 flex-shrink-0 ml-2">
+                        기존 일정 덮어씀
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="mt-3 text-xs text-slate-400 hover:text-slate-600"
+              onClick={() => setRangePopover(null)}
+            >
+              취소
+            </button>
+          </div>
         </div>
       )}
     </div>
