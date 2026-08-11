@@ -123,6 +123,18 @@ export default function ScheduleDashboard() {
       .finally(() => setLoading(false));
   }, []);
 
+  function updateMilestoneField(milestoneId, field, value) {
+    setMilestones((prev) =>
+      prev.map((m) => (m.id === milestoneId ? { ...m, [field]: value } : m))
+    );
+  }
+
+  function saveMilestoneField(milestoneId, field, value) {
+    persistMilestone(milestoneId, { [field]: value }).catch(() => {
+      alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+    });
+  }
+
   function toggleMilestoneComplete(milestoneId) {
     const target = milestones.find((m) => m.id === milestoneId);
     const nextCompleted = !target?.is_completed;
@@ -454,7 +466,7 @@ export default function ScheduleDashboard() {
                     {(zoom === "day" ? dayTicks : monthTicks).map((t, i) => (
                       <div
                         key={`grid-${i}`}
-                        className="absolute top-0 bottom-0 border-l border-slate-100"
+                        className="absolute top-0 bottom-0 border-l border-slate-200"
                         style={{ left: xFor(t) }}
                       />
                     ))}
@@ -569,22 +581,52 @@ export default function ScheduleDashboard() {
                                 </div>
                               </td>
                               <td className="px-2 py-2.5 text-slate-500">
-                                {fmt(
-                                  parseDate(m.actual_start_date) ||
-                                    parseDate(m.planned_start_date)
-                                )}
+                                <input
+                                  type="date"
+                                  value={m.actual_start_date || m.planned_start_date || ""}
+                                  onChange={(e) => {
+                                    const v = e.target.value || null;
+                                    updateMilestoneField(m.id, "actual_start_date", v);
+                                    saveMilestoneField(m.id, "actual_start_date", v);
+                                  }}
+                                  className="bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:outline-none rounded px-1 py-0.5 text-[11px] w-[108px]"
+                                />
                               </td>
                               <td className="px-2 py-2.5 text-slate-500">
-                                {fmt(
-                                  parseDate(m.actual_end_date) ||
-                                    parseDate(m.planned_end_date)
-                                )}
+                                <input
+                                  type="date"
+                                  value={m.actual_end_date || m.planned_end_date || ""}
+                                  onChange={(e) => {
+                                    const v = e.target.value || null;
+                                    updateMilestoneField(m.id, "actual_end_date", v);
+                                    saveMilestoneField(m.id, "actual_end_date", v);
+                                  }}
+                                  className="bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:outline-none rounded px-1 py-0.5 text-[11px] w-[108px]"
+                                />
                               </td>
                               <td className="px-2 py-2.5 text-slate-500">
-                                {m.category || "-"}
+                                <input
+                                  type="text"
+                                  value={m.category || ""}
+                                  placeholder="-"
+                                  onChange={(e) => updateMilestoneField(m.id, "category", e.target.value)}
+                                  onBlur={(e) =>
+                                    saveMilestoneField(m.id, "category", e.target.value || null)
+                                  }
+                                  className="bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:outline-none rounded px-1 py-0.5 text-[11px] w-full"
+                                />
                               </td>
                               <td className="px-2 py-2.5 text-slate-500">
-                                {m.manager || "-"}
+                                <input
+                                  type="text"
+                                  value={m.manager || ""}
+                                  placeholder="-"
+                                  onChange={(e) => updateMilestoneField(m.id, "manager", e.target.value)}
+                                  onBlur={(e) =>
+                                    saveMilestoneField(m.id, "manager", e.target.value || null)
+                                  }
+                                  className="bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:outline-none rounded px-1 py-0.5 text-[11px] w-full"
+                                />
                               </td>
                               <td className="px-4 py-2.5">
                                 <button
