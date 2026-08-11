@@ -43,6 +43,25 @@ async function persistProject(id, patch) {
   if (!res.ok) throw new Error("저장 실패");
 }
 
+async function createMilestone(patch) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/project_milestones`, {
+    method: "POST",
+    headers: { ...sbHeaders, Prefer: "return=representation" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("추가 실패");
+  const [row] = await res.json();
+  return row;
+}
+
+async function deleteMilestoneRemote(id) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/project_milestones?id=eq.${id}`, {
+    method: "DELETE",
+    headers: sbHeaders,
+  });
+  if (!res.ok) throw new Error("삭제 실패");
+}
+
 function toDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate()
@@ -153,6 +172,32 @@ export default function ScheduleDashboard() {
   function saveMilestoneField(milestoneId, field, value) {
     persistMilestone(milestoneId, { [field]: value }).catch(() => {
       alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+    });
+  }
+
+  // "+ 직접입력" — 템플릿에 없는 커스텀 마일스톤을 프로젝트에 하나 추가(맨 아래, weight 1)
+  function addCustomMilestone(projectId, pMilestones) {
+    const nextSort =
+      (pMilestones.length ? Math.max(...pMilestones.map((m) => m.sort_order)) : 0) + 1;
+    createMilestone({
+      project_id: projectId,
+      template_id: null,
+      name: "새 항목",
+      sort_order: nextSort,
+      weight: 1,
+    })
+      .then((row) => setMilestones((prev) => [...prev, row]))
+      .catch(() => alert("마일스톤 추가에 실패했어요. 네트워크 상태를 확인해주세요."));
+  }
+
+  // 직접 추가한 마일스톤만 삭제 가능(템플릿에서 온 기본 6개는 보호)
+  function deleteCustomMilestone(milestoneId) {
+    if (!window.confirm("이 마일스톤을 삭제할까요? 되돌릴 수 없습니다.")) return;
+    const prevMilestones = milestones;
+    setMilestones((prev) => prev.filter((m) => m.id !== milestoneId));
+    deleteMilestoneRemote(milestoneId).catch(() => {
+      setMilestones(prevMilestones);
+      alert("삭제에 실패했어요. 네트워크 상태를 확인해주세요.");
     });
   }
 
@@ -761,6 +806,7 @@ export default function ScheduleDashboard() {
                             담당자
                           </th>
                           <th className="text-left font-medium px-4 py-2 w-[160px]">완료</th>
+                          <th className="text-left font-medium px-2 py-2 w-[40px]"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -768,10 +814,21 @@ export default function ScheduleDashboard() {
                           const status = effectiveStatus(m, today);
                           const style = STATUS_STYLE[status];
                           const mProgress = milestoneProgress(m, today);
+                          const isCustom = !m.template_id;
                           return (
                             <tr key={m.id} className="border-b border-slate-100 last:border-0">
                               <td className="px-4 py-2.5 text-slate-700 sticky left-0 z-10 bg-slate-50 border-r border-slate-200">
-                                {m.name}
+                                <input
+                                  type="text"
+                                  value={m.name}
+                                  onChange={(e) => updateMilestoneField(m.id, "name", e.target.value)}
+                                  onBlur={(e) => {
+                                    const v = e.target.value.trim() || "이름 없음";
+                                    updateMilestoneField(m.id, "name", v);
+                                    saveMilestoneField(m.id, "name", v);
+                                  }}
+                                  className="bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:outline-none rounded px-1 py-0.5 text-xs font-medium w-full"
+                                />
                               </td>
                               <td className="px-2 py-2.5">
                                 <span
@@ -880,11 +937,30 @@ export default function ScheduleDashboard() {
                                   )}
                                 </button>
                               </td>
+                              <td className="px-2 py-2.5">
+                                {isCustom && (
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteCustomMilestone(m.id)}
+                                    title="이 마일스톤 삭제"
+                                    className="text-slate-300 hover:text-rose-500 transition-colors"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
+                    <button
+                      type="button"
+                      onClick={() => addCustomMilestone(p.id, pMilestones)}
+                      className="w-full text-left px-4 py-2 text-xs text-indigo-500 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border-t border-slate-100"
+                    >
+                      + 직접입력
+                    </button>
                   </div>
                 )}
               </div>
