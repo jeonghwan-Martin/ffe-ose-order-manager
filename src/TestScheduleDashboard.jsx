@@ -34,6 +34,21 @@ async function persistMilestone(id, patch) {
   if (!res.ok) throw new Error("저장 실패");
 }
 
+async function persistProject(id, patch) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/projects?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...sbHeaders, Prefer: "return=minimal" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("저장 실패");
+}
+
+function toDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
 const ZOOM = {
   month: { pxPerDay: 3.2, label: "월" },
   week: { pxPerDay: 9, label: "주" },
@@ -112,6 +127,8 @@ export default function ScheduleDashboard() {
   const [zoom, setZoom] = useState("month");
   const [expanded, setExpanded] = useState(new Set());
   const [hovered, setHovered] = useState(null);
+  const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
+  const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
 
   useEffect(() => {
     fetchAll()
@@ -132,6 +149,34 @@ export default function ScheduleDashboard() {
   function saveMilestoneField(milestoneId, field, value) {
     persistMilestone(milestoneId, { [field]: value }).catch(() => {
       alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+    });
+  }
+
+  // 프로젝트 행을 드래그해서 목록 순서를 수동으로 바꿈 — 처음 드래그하는 순간부터
+  // 그 시점의 전체 순서를 manual_sort_order로 고정하고, 이후엔 자동(일정순) 정렬 대신 이 값을 우선함
+  function handleDropReorder(targetProjectId) {
+    if (!draggedProjectId || draggedProjectId === targetProjectId) {
+      setDraggedProjectId(null);
+      return;
+    }
+    const currentOrder = sortedProjects.map((p) => p.id);
+    const fromIdx = currentOrder.indexOf(draggedProjectId);
+    const toIdx = currentOrder.indexOf(targetProjectId);
+    setDraggedProjectId(null);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const reordered = [...currentOrder];
+    reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, draggedProjectId);
+    setProjects((prev) =>
+      prev.map((p) => {
+        const idx = reordered.indexOf(p.id);
+        return idx === -1 ? p : { ...p, manual_sort_order: idx };
+      })
+    );
+    reordered.forEach((id, idx) => {
+      persistProject(id, { manual_sort_order: idx }).catch(() => {
+        alert("순서 저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+      });
     });
   }
 
@@ -225,19 +270,30 @@ export default function ScheduleDashboard() {
     return withManager ? withManager.manager : null;
   }
 
-  // 실제 일정(마일스톤 시작일) 기준 정렬 — 일정이 아예 없는 프로젝트는 맨 아래로
+  // 프로젝트 목록 정렬 — 드래그로 수동 순서를 한 번이라도 지정했으면 그 순서(manual_sort_order)를
+  // 우선 적용하고, 아직 아무도 안 건드렸으면 기존처럼 실제 일정(마일스톤 시작일) 기준 자동 정렬
+  // (일정이 아예 없는 프로젝트는 맨 아래로)
+  const getEarliestStart = useMemo(() => {
+    return (id) => {
+      const ms = milestonesByProject[id] || [];
+      const dates = ms
+        .map((m) => parseDate(m.actual_start_date) || parseDate(m.planned_start_date))
+        .filter(Boolean);
+      return dates.length ? Math.min(...dates.map((d) => d.getTime())) : Infinity;
+    };
+  }, [milestonesByProject]);
+
   const sortedProjects = useMemo(() => {
+    const hasManualOrder = projects.some((p) => p.manual_sort_order != null);
     return [...projects].sort((a, b) => {
-      const getEarliest = (id) => {
-        const ms = milestonesByProject[id] || [];
-        const dates = ms
-          .map((m) => parseDate(m.actual_start_date) || parseDate(m.planned_start_date))
-          .filter(Boolean);
-        return dates.length ? Math.min(...dates.map((d) => d.getTime())) : Infinity;
-      };
-      return getEarliest(a.id) - getEarliest(b.id);
+      if (hasManualOrder) {
+        const av = a.manual_sort_order ?? Infinity;
+        const bv = b.manual_sort_order ?? Infinity;
+        if (av !== bv) return av - bv;
+      }
+      return getEarliestStart(a.id) - getEarliestStart(b.id);
     });
-  }, [projects, milestonesByProject]);
+  }, [projects, getEarliestStart]);
 
   function xFor(date) {
     return daysBetween(rangeStart, date) * pxPerDay;
@@ -251,6 +307,39 @@ export default function ScheduleDashboard() {
       return next;
     });
   }
+
+  // 마일스톤 바를 좌우로 끌면 픽셀 이동량을 날짜로 환산 — 놓는 순간 실제 시작/종료일로 저장
+  useEffect(() => {
+    if (!dragState) return;
+    function handleMove(evt) {
+      const deltaX = evt.clientX - dragState.startX;
+      const deltaDays = Math.round(deltaX / pxPerDay);
+      setDragState((prev) => (prev ? { ...prev, deltaDays } : prev));
+    }
+    function handleUp() {
+      setDragState((prev) => {
+        if (prev && prev.deltaDays) {
+          const newStart = new Date(prev.origStart);
+          newStart.setDate(newStart.getDate() + prev.deltaDays);
+          const newEnd = new Date(prev.origEnd);
+          newEnd.setDate(newEnd.getDate() + prev.deltaDays);
+          const newStartStr = toDateStr(newStart);
+          const newEndStr = toDateStr(newEnd);
+          updateMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
+          updateMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
+          saveMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
+          saveMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
+        }
+        return null;
+      });
+    }
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [dragState, pxPerDay]);
 
   const todayX = xFor(today);
 
@@ -410,10 +499,32 @@ export default function ScheduleDashboard() {
             return (
               <div key={p.id} className="border-b border-slate-100">
                 <div
-                  className="flex hover:bg-slate-50/60 cursor-pointer"
+                  className={`flex hover:bg-slate-50/60 cursor-pointer ${
+                    draggedProjectId && draggedProjectId !== p.id
+                      ? "border-t-2 border-t-transparent hover:border-t-indigo-400"
+                      : ""
+                  }`}
                   onClick={() => toggleExpand(p.id)}
+                  onDragOver={(evt) => evt.preventDefault()}
+                  onDrop={(evt) => {
+                    evt.preventDefault();
+                    handleDropReorder(p.id);
+                  }}
                 >
                   <div className="w-[280px] flex-shrink-0 border-r border-slate-200 px-4 py-3 flex items-start gap-2 sticky left-0 z-10 bg-white">
+                    <span
+                      draggable
+                      onDragStart={(evt) => {
+                        evt.stopPropagation();
+                        setDraggedProjectId(p.id);
+                      }}
+                      onDragEnd={() => setDraggedProjectId(null)}
+                      onClick={(evt) => evt.stopPropagation()}
+                      title="드래그해서 순서 변경"
+                      className="text-slate-300 hover:text-slate-500 text-xs mt-0.5 cursor-grab active:cursor-grabbing select-none"
+                    >
+                      ⠿
+                    </span>
                     <span
                       className={`text-slate-300 text-xs mt-0.5 transition-transform ${
                         isOpen ? "rotate-90" : ""
@@ -486,8 +597,12 @@ export default function ScheduleDashboard() {
                     {dated.map(({ m, s, e }) => {
                       const status = effectiveStatus(m, today);
                       const style = STATUS_STYLE[status];
-                      const left = xFor(s);
-                      const width = Math.max(xFor(e) - xFor(s), 4);
+                      const isDragging = dragState && dragState.milestoneId === m.id;
+                      const dragDays = isDragging ? dragState.deltaDays || 0 : 0;
+                      const dispS = dragDays ? new Date(s.getTime() + dragDays * 86400000) : s;
+                      const dispE = dragDays ? new Date(e.getTime() + dragDays * 86400000) : e;
+                      const left = xFor(dispS);
+                      const width = Math.max(xFor(dispE) - xFor(dispS), 4);
                       const shortDate = (d) =>
                         `${String(d.getMonth() + 1).padStart(2, "0")}.${String(
                           d.getDate()
@@ -495,7 +610,9 @@ export default function ScheduleDashboard() {
                       return (
                         <div key={m.id} className="absolute" style={{ left, top: 10, width: Math.max(width, 46) }}>
                           <div
-                            className="rounded-md border text-[11px] px-1.5 flex items-center overflow-hidden whitespace-nowrap"
+                            className={`rounded-md border text-[11px] px-1.5 flex items-center overflow-hidden whitespace-nowrap select-none ${
+                              isDragging ? "cursor-grabbing shadow-md" : "cursor-grab"
+                            }`}
                             style={{
                               width,
                               height: 24,
@@ -503,13 +620,26 @@ export default function ScheduleDashboard() {
                               borderColor: style.border,
                               color: style.text,
                             }}
-                            onMouseEnter={() => setHovered({ m, s, e, status })}
+                            onMouseEnter={() => !dragState && setHovered({ m, s, e, status })}
                             onMouseLeave={() => setHovered(null)}
+                            onMouseDown={(evt) => {
+                              evt.stopPropagation();
+                              evt.preventDefault();
+                              setDragState({
+                                milestoneId: m.id,
+                                startX: evt.clientX,
+                                origStart: s,
+                                origEnd: e,
+                                deltaDays: 0,
+                              });
+                            }}
+                            onClick={(evt) => evt.stopPropagation()}
+                            title="끌어서 일정 변경"
                           >
                             {width > 60 ? m.name : ""}
                           </div>
                           <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
-                            {shortDate(s)}~{shortDate(e)}
+                            {shortDate(dispS)}~{shortDate(dispE)}
                           </div>
                         </div>
                       );
