@@ -12,28 +12,21 @@ const sbHeaders = {
 };
 
 async function fetchAll() {
-  const [pRes, mRes, cRes] = await Promise.all([
+  const [pRes, mRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/projects?select=*&order=target_open_date.asc`, {
       headers: sbHeaders,
     }),
     fetch(`${SUPABASE_URL}/rest/v1/project_milestones?select=*&order=sort_order.asc`, {
       headers: sbHeaders,
     }),
-    fetch(`${SUPABASE_URL}/rest/v1/milestone_checklist_items?select=*`, {
-      headers: sbHeaders,
-    }),
   ]);
-  if (!pRes.ok || !mRes.ok || !cRes.ok) throw new Error("데이터를 불러오지 못했습니다");
-  const [projects, milestones, checklist] = await Promise.all([
-    pRes.json(),
-    mRes.json(),
-    cRes.json(),
-  ]);
-  return { projects, milestones, checklist };
+  if (!pRes.ok || !mRes.ok) throw new Error("데이터를 불러오지 못했습니다");
+  const [projects, milestones] = await Promise.all([pRes.json(), mRes.json()]);
+  return { projects, milestones };
 }
 
-async function persistChecklistItem(id, patch) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/milestone_checklist_items?id=eq.${id}`, {
+async function persistMilestone(id, patch) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/project_milestones?id=eq.${id}`, {
     method: "PATCH",
     headers: { ...sbHeaders, Prefer: "return=minimal" },
     body: JSON.stringify(patch),
@@ -84,35 +77,26 @@ function computeStatus(m, today) {
   return "예정";
 }
 
-// 체크리스트를 반영한 최종 상태 — "촬영본 납기" 체크 시 마일스톤 전체 완료로 판정
-function effectiveStatus(m, today, items) {
-  if (items && items.length) {
-    const shootDelivery = items.find((it) => it.item_name === "촬영본 납기");
-    if (shootDelivery && shootDelivery.is_checked) return "완료";
-    if (items.every((it) => it.is_checked)) return "완료";
-  }
+// 최종 상태 — 완료 토글이 켜져 있으면 무조건 완료, 아니면 날짜 기반 자동 판정
+function effectiveStatus(m, today) {
+  if (m.is_completed) return "완료";
   return computeStatus(m, today);
 }
 
-// 마일스톤 진행률 — 체크리스트가 있으면 체크된 비율, 없으면 상태 기반 추정치
-function milestoneProgress(m, items, today) {
-  if (items && items.length) {
-    const checkedCount = items.filter((it) => it.is_checked).length;
-    return Math.round((checkedCount / items.length) * 100);
-  }
-  const status = effectiveStatus(m, today, items);
-  if (status === "완료") return 100;
+// 마일스톤 진행률 — 완료 토글이면 100%, 아니면 상태 기반 추정치
+function milestoneProgress(m, today) {
+  if (m.is_completed) return 100;
+  const status = computeStatus(m, today);
   if (status === "진행중" || status === "지연") return 50;
   return 0;
 }
 
 // 프로젝트 전체 공정률 — 마일스톤 weight로 가중평균
-function projectProgress(pMilestones, checklistByMilestone, today) {
+function projectProgress(pMilestones, today) {
   let totalWeight = 0;
   let sum = 0;
   for (const m of pMilestones) {
-    const items = checklistByMilestone[m.id] || [];
-    const p = milestoneProgress(m, items, today);
+    const p = milestoneProgress(m, today);
     const w = Number(m.weight) || 1;
     sum += p * w;
     totalWeight += w;
@@ -123,7 +107,6 @@ function projectProgress(pMilestones, checklistByMilestone, today) {
 export default function ScheduleDashboard() {
   const [projects, setProjects] = useState([]);
   const [milestones, setMilestones] = useState([]);
-  const [checklist, setChecklist] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("month");
@@ -132,38 +115,39 @@ export default function ScheduleDashboard() {
 
   useEffect(() => {
     fetchAll()
-      .then(({ projects, milestones, checklist }) => {
+      .then(({ projects, milestones }) => {
         setProjects(projects);
         setMilestones(milestones);
-        setChecklist(checklist);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
 
-  function toggleChecklistItem(itemId, byName) {
-    setChecklist((prev) =>
-      prev.map((c) => {
-        if (c.id !== itemId) return c;
-        const nextChecked = !c.is_checked;
-        return {
-          ...c,
-          is_checked: nextChecked,
-          checked_at: nextChecked ? new Date().toISOString() : null,
-          checked_by: nextChecked ? byName || c.manager || null : null,
-        };
-      })
+  function toggleMilestoneComplete(milestoneId) {
+    const target = milestones.find((m) => m.id === milestoneId);
+    const nextCompleted = !target?.is_completed;
+    setMilestones((prev) =>
+      prev.map((m) =>
+        m.id !== milestoneId
+          ? m
+          : {
+              ...m,
+              is_completed: nextCompleted,
+              completed_at: nextCompleted ? new Date().toISOString() : null,
+            }
+      )
     );
-    const target = checklist.find((c) => c.id === itemId);
-    const nextChecked = !target?.is_checked;
-    persistChecklistItem(itemId, {
-      is_checked: nextChecked,
-      checked_at: nextChecked ? new Date().toISOString() : null,
-      checked_by: nextChecked ? byName || target?.manager || null : null,
+    persistMilestone(milestoneId, {
+      is_completed: nextCompleted,
+      completed_at: nextCompleted ? new Date().toISOString() : null,
     }).catch(() => {
       // 저장 실패 시 화면 상태를 원래대로 되돌림
-      setChecklist((prev) =>
-        prev.map((c) => (c.id === itemId ? { ...c, is_checked: !nextChecked } : c))
+      setMilestones((prev) =>
+        prev.map((m) =>
+          m.id === milestoneId
+            ? { ...m, is_completed: !nextCompleted, completed_at: target?.completed_at ?? null }
+            : m
+        )
       );
       alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
     });
@@ -179,15 +163,6 @@ export default function ScheduleDashboard() {
     }
     return map;
   }, [milestones]);
-
-  const checklistByMilestone = useMemo(() => {
-    const map = {};
-    for (const c of checklist) {
-      if (!map[c.project_milestone_id]) map[c.project_milestone_id] = [];
-      map[c.project_milestone_id].push(c);
-    }
-    return map;
-  }, [checklist]);
 
   const { rangeStart, rangeEnd } = useMemo(() => {
     let allDates = [today];
@@ -418,7 +393,7 @@ export default function ScheduleDashboard() {
               if (lastEnd > targetOpen) isDelayed = true;
             }
 
-            const progress = projectProgress(pMilestones, checklistByMilestone, today);
+            const progress = projectProgress(pMilestones, today);
 
             return (
               <div key={p.id} className="border-b border-slate-100">
@@ -435,13 +410,17 @@ export default function ScheduleDashboard() {
                       ▶
                     </span>
                     <div className="min-w-0">
-                      {dated.length > 0 && (
+                      {dated.length > 0 ? (
                         <div className="text-[11px] font-medium text-indigo-600">
                           {fmt(
                             dated.reduce((min, x) => (x.s < min ? x.s : min), dated[0].s)
                           )}
                           {" ~ "}
                           {fmt(dated.reduce((max, x) => (x.e > max ? x.e : max), dated[0].e))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-medium text-slate-400">
+                          일정 미입력
                         </div>
                       )}
                       <div className="text-sm font-medium text-slate-800 truncate">
@@ -472,6 +451,13 @@ export default function ScheduleDashboard() {
                     </div>
                   </div>
                   <div className="relative flex-1" style={{ width: totalWidth, height: 62 }}>
+                    {(zoom === "day" ? dayTicks : monthTicks).map((t, i) => (
+                      <div
+                        key={`grid-${i}`}
+                        className="absolute top-0 bottom-0 border-l border-slate-100"
+                        style={{ left: xFor(t) }}
+                      />
+                    ))}
                     <div
                       className="absolute top-0 bottom-0 w-px bg-rose-300"
                       style={{ left: todayX }}
@@ -486,8 +472,7 @@ export default function ScheduleDashboard() {
                       </div>
                     )}
                     {dated.map(({ m, s, e }) => {
-                      const items = checklistByMilestone[m.id] || [];
-                      const status = effectiveStatus(m, today, items);
+                      const status = effectiveStatus(m, today);
                       const style = STATUS_STYLE[status];
                       const left = xFor(s);
                       const width = Math.max(xFor(e) - xFor(s), 4);
@@ -549,15 +534,14 @@ export default function ScheduleDashboard() {
                           <th className="text-left font-medium px-2 py-2 w-[90px]">
                             담당자
                           </th>
-                          <th className="text-left font-medium px-4 py-2">체크리스트</th>
+                          <th className="text-left font-medium px-4 py-2 w-[160px]">완료</th>
                         </tr>
                       </thead>
                       <tbody>
                         {pMilestones.map((m) => {
-                          const items = checklistByMilestone[m.id] || [];
-                          const status = effectiveStatus(m, today, items);
+                          const status = effectiveStatus(m, today);
                           const style = STATUS_STYLE[status];
-                          const mProgress = milestoneProgress(m, items, today);
+                          const mProgress = milestoneProgress(m, today);
                           return (
                             <tr key={m.id} className="border-b border-slate-100 last:border-0">
                               <td className="px-4 py-2.5 text-slate-700 sticky left-0 z-10 bg-slate-50 border-r border-slate-200">
@@ -603,56 +587,42 @@ export default function ScheduleDashboard() {
                                 {m.manager || "-"}
                               </td>
                               <td className="px-4 py-2.5">
-                                {items.length === 0 ? (
-                                  <span className="text-slate-300">-</span>
-                                ) : (
-                                  <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                    {items.map((it) => (
-                                      <button
-                                        key={it.id}
-                                        type="button"
-                                        onClick={() => toggleChecklistItem(it.id)}
-                                        className={`inline-flex items-center gap-1 cursor-pointer hover:opacity-70 transition-opacity ${
-                                          it.is_checked
-                                            ? "text-emerald-700"
-                                            : "text-slate-600"
-                                        }`}
-                                      >
-                                        <span
-                                          className={`inline-block w-3 h-3 rounded-sm border flex-shrink-0 ${
-                                            it.is_checked
-                                              ? "bg-emerald-500 border-emerald-600"
-                                              : "border-slate-300"
-                                          }`}
-                                        >
-                                          {it.is_checked && (
-                                            <svg viewBox="0 0 12 12" className="w-3 h-3 text-white">
-                                              <path
-                                                d="M2.5 6.5L5 9L9.5 3.5"
-                                                stroke="currentColor"
-                                                strokeWidth="1.5"
-                                                fill="none"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                              />
-                                            </svg>
-                                          )}
-                                        </span>
-                                        {it.item_name}
-                                        {it.is_checked ? (
-                                          <span className="text-emerald-600 font-normal">
-                                            {" "}
-                                            · {it.manager || managerOf(pMilestones) || "담당자 미지정"} 완료
-                                            {it.checked_at &&
-                                              ` (${fmt(it.checked_at)})`}
-                                          </span>
-                                        ) : (
-                                          it.manager && ` (${it.manager})`
-                                        )}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleMilestoneComplete(m.id)}
+                                  className={`inline-flex items-center gap-1.5 cursor-pointer hover:opacity-70 transition-opacity ${
+                                    m.is_completed ? "text-emerald-700" : "text-slate-600"
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block w-3.5 h-3.5 rounded-sm border flex-shrink-0 ${
+                                      m.is_completed
+                                        ? "bg-emerald-500 border-emerald-600"
+                                        : "border-slate-300"
+                                    }`}
+                                  >
+                                    {m.is_completed && (
+                                      <svg viewBox="0 0 12 12" className="w-3.5 h-3.5 text-white">
+                                        <path
+                                          d="M2.5 6.5L5 9L9.5 3.5"
+                                          stroke="currentColor"
+                                          strokeWidth="1.5"
+                                          fill="none"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                      </svg>
+                                    )}
+                                  </span>
+                                  {m.is_completed ? (
+                                    <span>
+                                      완료
+                                      {m.completed_at && ` (${fmt(m.completed_at)})`}
+                                    </span>
+                                  ) : (
+                                    <span>미완료</span>
+                                  )}
+                                </button>
                               </td>
                             </tr>
                           );
