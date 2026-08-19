@@ -166,6 +166,7 @@ export default function ScheduleDashboard() {
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
+  const [editingProjectId, setEditingProjectId] = useState(null); // 프로젝트명 인라인 수정 중인 항목
   const [hovered, setHovered] = useState(null);
   const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
@@ -372,9 +373,20 @@ export default function ScheduleDashboard() {
     return ticks;
   }, [zoom, rangeStart, rangeEnd]);
 
-  function managerOf(pMilestones) {
-    const withManager = pMilestones.find((m) => m.manager);
-    return withManager ? withManager.manager : null;
+  // 프로젝트 전체 담당자 — 마일스톤마다 다른 담당자가 붙어있을 수 있어 중복 제거 후 전부 나열
+  function managersOf(pMilestones) {
+    const names = [...new Set(pMilestones.map((m) => m.manager).filter(Boolean))];
+    return names.length ? names.join(', ') : null;
+  }
+
+  // 프로젝트명 인라인 수정
+  function updateProjectField(projectId, field, value) {
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, [field]: value } : p)));
+  }
+  function saveProjectField(projectId, field, value) {
+    persistProject(projectId, { [field]: value }).catch(() => {
+      alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+    });
   }
 
   // 프로젝트 목록 정렬 — 드래그로 수동 순서를 한 번이라도 지정했으면 그 순서(manual_sort_order)를
@@ -828,12 +840,46 @@ export default function ScheduleDashboard() {
                           일정 미입력
                         </div>
                       )}
-                      <div className="text-sm font-medium text-slate-800 truncate">
-                        {p.name}
-                        {managerOf(pMilestones) && (
-                          <span className="text-indigo-500 font-normal ml-1.5">
-                            · {managerOf(pMilestones)}
-                          </span>
+                      <div className="text-sm font-medium text-slate-800 flex items-center gap-1 group/name">
+                        {editingProjectId === p.id ? (
+                          <input
+                            type="text"
+                            autoFocus
+                            value={p.name}
+                            onClick={(evt) => evt.stopPropagation()}
+                            onChange={(e) => updateProjectField(p.id, "name", e.target.value)}
+                            onBlur={(e) => {
+                              const v = e.target.value.trim() || "이름 없음";
+                              updateProjectField(p.id, "name", v);
+                              saveProjectField(p.id, "name", v);
+                              setEditingProjectId(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") e.currentTarget.blur();
+                              if (e.key === "Escape") setEditingProjectId(null);
+                            }}
+                            className="bg-white border border-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-300 rounded px-1 py-0.5 text-sm font-medium w-full"
+                          />
+                        ) : (
+                          <>
+                            <span className="truncate">{p.name}</span>
+                            <button
+                              type="button"
+                              onClick={(evt) => {
+                                evt.stopPropagation();
+                                setEditingProjectId(p.id);
+                              }}
+                              title="프로젝트명 수정"
+                              className="text-slate-300 hover:text-indigo-500 opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0"
+                            >
+                              ✎
+                            </button>
+                            {managersOf(pMilestones) && (
+                              <span className="text-indigo-500 font-normal ml-1 truncate">
+                                · {managersOf(pMilestones)}
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                       <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
