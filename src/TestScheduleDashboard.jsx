@@ -163,6 +163,7 @@ export default function ScheduleDashboard() {
   const [projects, setProjects] = useState([]);
   const [milestones, setMilestones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
@@ -184,6 +185,20 @@ export default function ScheduleDashboard() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  // 새로고침 버튼 — 페이지 전체를 새로고침하지 않고 Supabase 데이터만 다시 불러옴
+  // (다른 사람이 새 프로젝트를 추가했거나, 캘린더 자동 동기화로 일정이 바뀐 경우 등)
+  function refresh() {
+    setRefreshing(true);
+    fetchAll()
+      .then(({ projects, milestones }) => {
+        setProjects(projects);
+        setMilestones(milestones);
+        setError(null);
+      })
+      .catch((e) => alert("새로고침에 실패했어요: " + e.message))
+      .finally(() => setRefreshing(false));
+  }
 
   function updateMilestoneField(milestoneId, field, value) {
     setMilestones((prev) =>
@@ -278,6 +293,29 @@ export default function ScheduleDashboard() {
         )
       );
       alert("저장에 실패했어요. 네트워크 상태를 확인해주세요.");
+    });
+  }
+
+  // 간트 바를 지워서 일정을 미입력 상태로 되돌림 (드래그로 만든 일정을 빠르게 삭제할 때 사용)
+  function clearMilestoneDates(milestoneId) {
+    const target = milestones.find((m) => m.id === milestoneId);
+    if (!target) return;
+    const prevStart = target.actual_start_date;
+    const prevEnd = target.actual_end_date;
+    setMilestones((prev) =>
+      prev.map((m) =>
+        m.id === milestoneId ? { ...m, actual_start_date: null, actual_end_date: null } : m
+      )
+    );
+    persistMilestone(milestoneId, { actual_start_date: null, actual_end_date: null }).catch(() => {
+      setMilestones((prev) =>
+        prev.map((m) =>
+          m.id === milestoneId
+            ? { ...m, actual_start_date: prevStart, actual_end_date: prevEnd }
+            : m
+        )
+      );
+      alert("삭제에 실패했어요. 네트워크 상태를 확인해주세요.");
     });
   }
 
@@ -475,9 +513,13 @@ export default function ScheduleDashboard() {
     const shortDate = (d) =>
       `${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
     return (
-      <div key={m.id} className="absolute" style={{ left, top, width: Math.max(width, 46) }}>
+      <div
+        key={m.id}
+        className="absolute group/bar"
+        style={{ left, top, width: Math.max(width, 46) }}
+      >
         <div
-          className={`rounded-md border text-[11px] px-1.5 flex items-center overflow-hidden whitespace-nowrap select-none ${
+          className={`relative rounded-md border text-[11px] pl-5 pr-5 flex items-center overflow-visible whitespace-nowrap select-none ${
             isDragging ? "cursor-grabbing shadow-md" : "cursor-grab"
           }`}
           style={{
@@ -503,7 +545,50 @@ export default function ScheduleDashboard() {
           onClick={(evt) => evt.stopPropagation()}
           title="끌어서 일정 변경"
         >
-          {width > 60 ? m.name : ""}
+          {/* 완료 체크 — 클릭 한 번으로 이 마일스톤을 완료/미완료 전환 */}
+          <button
+            type="button"
+            className="absolute left-1 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-sm border flex items-center justify-center flex-shrink-0"
+            style={{
+              background: m.is_completed ? "#10b981" : "rgba(255,255,255,0.6)",
+              borderColor: m.is_completed ? "#059669" : style.border,
+            }}
+            onMouseDown={(evt) => evt.stopPropagation()}
+            onClick={(evt) => {
+              evt.stopPropagation();
+              toggleMilestoneComplete(m.id);
+            }}
+            title={m.is_completed ? "완료됨 — 클릭해서 미완료로" : "클릭해서 완료 처리"}
+          >
+            {m.is_completed && (
+              <svg viewBox="0 0 12 12" className="w-3 h-3 text-white">
+                <path
+                  d="M2.5 6.5L5 9L9.5 3.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
+          {width > 80 ? m.name : ""}
+          {/* 삭제 — 평소엔 숨겨져있다가 바에 마우스 올리면 나타남(드래그로 만든 일정 빠르게 지우기) */}
+          <button
+            type="button"
+            className="absolute right-0.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border border-slate-300 text-slate-500 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-600 items-center justify-center text-[10px] leading-none opacity-0 group-hover/bar:opacity-100 transition-opacity hidden sm:flex"
+            onMouseDown={(evt) => evt.stopPropagation()}
+            onClick={(evt) => {
+              evt.stopPropagation();
+              if (window.confirm(`"${m.name}" 일정을 지울까요? (날짜만 지워지고 마일스톤 자체는 남습니다)`)) {
+                clearMilestoneDates(m.id);
+              }
+            }}
+            title="일정 삭제"
+          >
+            ✕
+          </button>
         </div>
         <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
           {shortDate(dispS)}~{shortDate(dispE)}
@@ -550,20 +635,33 @@ export default function ScheduleDashboard() {
               프로젝트 {projects.length}개 · 오늘 {fmt(today)} · 테스트 배포
             </p>
           </div>
-          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-            {Object.keys(ZOOM).map((z) => (
-              <button
-                key={z}
-                onClick={() => setZoom(z)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  zoom === z
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {ZOOM[z].label}
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={refresh}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Supabase에서 최신 데이터를 다시 불러옵니다"
+            >
+              <span className={refreshing ? "inline-block animate-spin" : "inline-block"}>
+                ⟳
+              </span>
+              새로고침
+            </button>
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+              {Object.keys(ZOOM).map((z) => (
+                <button
+                  key={z}
+                  onClick={() => setZoom(z)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    zoom === z
+                      ? "bg-white text-slate-900 shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  {ZOOM[z].label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="px-6 pb-3 flex items-center gap-4 text-xs text-slate-500">
@@ -897,8 +995,11 @@ export default function ScheduleDashboard() {
                 </div>
 
                 {isOpen && (
-                  <div className="bg-slate-50/70 border-t border-slate-100">
-                    <table className="w-full text-xs">
+                  <div
+                    className="sticky left-0 bg-slate-50/70 border-t border-slate-100 overflow-x-auto"
+                    style={{ width: "100vw", maxWidth: "100vw" }}
+                  >
+                    <table className="text-xs" style={{ minWidth: 900 }}>
                       <thead>
                         <tr className="text-slate-400 border-b border-slate-200">
                           <th className="text-left font-medium px-4 py-2 w-[180px] sticky left-0 z-10 bg-slate-100 border-r border-slate-200">
