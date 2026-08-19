@@ -102,25 +102,24 @@ function daysBetween(a, b) {
   return Math.round((b - a) / 86400000);
 }
 
-// 기간이 겹치는 마일스톤들을 클러스터로 묶음(스윕: 시작일순 정렬 후 이어붙이기)
-// 클러스터 안 items가 2개 이상이면 실제로 겹치는 그룹, 1개면 단독 일정
-function buildOverlapClusters(dated) {
-  const sorted = [...dated].sort((a, b) => a.s - b.s);
-  const clusters = [];
-  let current = null;
+// 기간이 겹치는 마일스톤들에 자동으로 서로 다른 레인(줄)을 배정 — 겹치지 않으면 전부 0번 레인,
+// 겹치면 그리디하게 빈 레인을 찾아 배정(고전적인 구간 스케줄링 레인 배정)
+function assignLanes(dated) {
+  const sorted = [...dated].sort((a, b) => a.s - b.s || a.e - b.e);
+  const laneEnds = []; // 각 레인에 마지막으로 배정된 항목의 종료시각(ms)
+  const laneOf = new Map();
   for (const item of sorted) {
-    if (!current) {
-      current = { items: [item], maxEnd: item.e };
-    } else if (item.s <= current.maxEnd) {
-      current.items.push(item);
-      if (item.e > current.maxEnd) current.maxEnd = item.e;
+    const startMs = item.s.getTime();
+    let lane = laneEnds.findIndex((end) => end <= startMs);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(item.e.getTime());
     } else {
-      clusters.push(current);
-      current = { items: [item], maxEnd: item.e };
+      laneEnds[lane] = item.e.getTime();
     }
+    laneOf.set(item.m.id, lane);
   }
-  if (current) clusters.push(current);
-  return clusters;
+  return { laneOf, laneCount: Math.max(laneEnds.length, 1) };
 }
 
 function computeStatus(m, today) {
@@ -167,7 +166,6 @@ export default function ScheduleDashboard() {
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
-  const [subtrackExpanded, setSubtrackExpanded] = useState(new Set()); // 겹치는 마일스톤 카테고리별 서브트랙 펼침
   const [hovered, setHovered] = useState(null);
   const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
@@ -423,15 +421,6 @@ export default function ScheduleDashboard() {
     });
   }
 
-  // 겹치는 마일스톤 클러스터의 카테고리별 서브트랙 펼침/접힘
-  function toggleSubtrack(id) {
-    setSubtrackExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
 
   // 마일스톤 바를 좌우로 끌면 픽셀 이동량을 날짜로 환산 — 놓는 순간 실제 시작/종료일로 저장
   useEffect(() => {
@@ -529,7 +518,18 @@ export default function ScheduleDashboard() {
             borderColor: style.border,
             color: style.text,
           }}
-          onMouseEnter={() => !dragState && setHovered({ m, s, e, status })}
+          onMouseEnter={(evt) =>
+            !dragState &&
+            setHovered({ m, s, e, status, x: evt.clientX, y: evt.clientY })
+          }
+          onMouseMove={(evt) =>
+            !dragState &&
+            setHovered((prev) =>
+              prev && prev.m.id === m.id
+                ? { ...prev, x: evt.clientX, y: evt.clientY }
+                : prev
+            )
+          }
           onMouseLeave={() => setHovered(null)}
           onMouseDown={(evt) => {
             evt.stopPropagation();
@@ -682,12 +682,6 @@ export default function ScheduleDashboard() {
             <span className="inline-block w-2 h-2 rotate-45 bg-amber-400 border border-amber-600" />
             오픈예정일
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-indigo-500 text-white text-[8px] font-bold">
-              n
-            </span>
-            겹치는 일정(클릭시 카테고리별로 펼치기)
-          </div>
         </div>
       </div>
 
@@ -779,29 +773,10 @@ export default function ScheduleDashboard() {
 
             const progress = projectProgress(pMilestones, today);
 
-            // 겹치는 마일스톤 클러스터 계산 — 클러스터가 2건 이상 겹치면 기본 트랙에선 점 마커로만 표시
-            const isSubtrackOpen = subtrackExpanded.has(p.id);
-            const clusters = buildOverlapClusters(dated);
-            const overlapClusters = clusters.filter((c) => c.items.length > 1);
-            const clusteredIds = new Set(
-              overlapClusters.flatMap((c) => c.items.map((x) => x.m.id))
-            );
-            const soloItems = dated.filter((x) => !clusteredIds.has(x.m.id));
-            // 서브트랙을 펼쳤을 때 카테고리별 레인 순서(처음 등장 순, 미분류는 맨 뒤)
-            const categoryLanes = [];
-            if (isSubtrackOpen) {
-              for (const c of overlapClusters) {
-                for (const item of c.items) {
-                  const cat = item.m.category || "미분류";
-                  if (!categoryLanes.includes(cat)) categoryLanes.push(cat);
-                }
-              }
-              categoryLanes.sort((a, b) =>
-                a === "미분류" ? 1 : b === "미분류" ? -1 : a.localeCompare(b, "ko")
-              );
-            }
+            // 겹치는 마일스톤은 자동으로 레인(줄)을 나눠서 전부 항상 보이게 함(클릭 불필요)
+            const { laneOf, laneCount } = assignLanes(dated);
             const laneHeight = 34;
-            const rowHeight = 62 + categoryLanes.length * laneHeight;
+            const rowHeight = 62 + (laneCount - 1) * laneHeight;
 
             return (
               <div key={p.id} className="border-b border-slate-100">
@@ -879,16 +854,6 @@ export default function ScheduleDashboard() {
                         </span>
                       </div>
                     </div>
-                    {isSubtrackOpen &&
-                      categoryLanes.map((cat, i) => (
-                        <div
-                          key={cat}
-                          className="absolute left-4 text-[10px] font-medium text-slate-400 truncate max-w-[220px]"
-                          style={{ top: 10 + (i + 1) * laneHeight + 4 }}
-                        >
-                          {cat}
-                        </div>
-                      ))}
                   </div>
                   <div
                     className="relative flex-1 cursor-crosshair"
@@ -943,48 +908,8 @@ export default function ScheduleDashboard() {
                         <div className="w-2 h-2 rotate-45 bg-amber-400 border border-amber-600" />
                       </div>
                     )}
-                    {soloItems.map(({ m, s, e }) => renderMilestoneBar(m, s, e, 10))}
-                    {isSubtrackOpen
-                      ? overlapClusters.flatMap((c) =>
-                          c.items.map(({ m, s, e }) => {
-                            const laneIdx = categoryLanes.indexOf(m.category || "미분류");
-                            return renderMilestoneBar(m, s, e, 10 + (laneIdx + 1) * laneHeight);
-                          })
-                        )
-                      : overlapClusters.map((c) => {
-                          const clusterStart = c.items.reduce(
-                            (min, x) => (x.s < min ? x.s : min),
-                            c.items[0].s
-                          );
-                          const names = c.items.map((x) => x.m.name).join(", ");
-                          return (
-                            <div
-                              key={`cluster-${clusterStart.getTime()}`}
-                              className="absolute flex flex-col items-center cursor-pointer"
-                              style={{ left: xFor(clusterStart) - 3, top: 14 }}
-                              onClick={(evt) => {
-                                evt.stopPropagation();
-                                toggleSubtrack(p.id);
-                              }}
-                              title={`겹치는 일정 ${c.items.length}건: ${names} — 클릭해서 카테고리별로 펼치기`}
-                            >
-                              <span className="w-4 h-4 rounded-full bg-indigo-500 border-2 border-white shadow flex items-center justify-center text-[8px] text-white font-bold leading-none">
-                                {c.items.length}
-                              </span>
-                            </div>
-                          );
-                        })}
-                    {isSubtrackOpen && overlapClusters.length > 0 && (
-                      <button
-                        type="button"
-                        className="absolute right-2 top-1 text-[10px] text-indigo-400 hover:text-indigo-600 bg-white/90 px-1.5 py-0.5 rounded border border-indigo-100"
-                        onClick={(evt) => {
-                          evt.stopPropagation();
-                          toggleSubtrack(p.id);
-                        }}
-                      >
-                        ▲ 서브트랙 접기
-                      </button>
+                    {dated.map(({ m, s, e }) =>
+                      renderMilestoneBar(m, s, e, 10 + laneOf.get(m.id) * laneHeight)
                     )}
                     {dated.length === 0 && (
                       <div className="absolute left-3 top-4 text-[11px] text-slate-300">
@@ -1186,7 +1111,10 @@ export default function ScheduleDashboard() {
       </div>
 
       {hovered && (
-        <div className="fixed bottom-6 right-6 bg-slate-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg max-w-xs z-40">
+        <div
+          className="fixed bg-slate-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg max-w-xs z-40 pointer-events-none"
+          style={{ left: hovered.x + 14, top: hovered.y + 14 }}
+        >
           <div className="font-medium">{hovered.m.name}</div>
           <div className="text-slate-300 mt-0.5">
             {fmt(hovered.s)} ~ {fmt(hovered.e)}
