@@ -102,6 +102,27 @@ function daysBetween(a, b) {
   return Math.round((b - a) / 86400000);
 }
 
+// 기간이 겹치는 마일스톤들을 클러스터로 묶음(스윕: 시작일순 정렬 후 이어붙이기)
+// 클러스터 안 items가 2개 이상이면 실제로 겹치는 그룹, 1개면 단독 일정
+function buildOverlapClusters(dated) {
+  const sorted = [...dated].sort((a, b) => a.s - b.s);
+  const clusters = [];
+  let current = null;
+  for (const item of sorted) {
+    if (!current) {
+      current = { items: [item], maxEnd: item.e };
+    } else if (item.s <= current.maxEnd) {
+      current.items.push(item);
+      if (item.e > current.maxEnd) current.maxEnd = item.e;
+    } else {
+      clusters.push(current);
+      current = { items: [item], maxEnd: item.e };
+    }
+  }
+  if (current) clusters.push(current);
+  return clusters;
+}
+
 function computeStatus(m, today) {
   const s = parseDate(m.actual_start_date) || parseDate(m.planned_start_date);
   const e = parseDate(m.actual_end_date) || parseDate(m.planned_end_date);
@@ -145,6 +166,7 @@ export default function ScheduleDashboard() {
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
+  const [subtrackExpanded, setSubtrackExpanded] = useState(new Set()); // 겹치는 마일스톤 카테고리별 서브트랙 펼침
   const [hovered, setHovered] = useState(null);
   const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
@@ -363,6 +385,16 @@ export default function ScheduleDashboard() {
     });
   }
 
+  // 겹치는 마일스톤 클러스터의 카테고리별 서브트랙 펼침/접힘
+  function toggleSubtrack(id) {
+    setSubtrackExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   // 마일스톤 바를 좌우로 끌면 픽셀 이동량을 날짜로 환산 — 놓는 순간 실제 시작/종료일로 저장
   useEffect(() => {
     if (!dragState) return;
@@ -429,6 +461,56 @@ export default function ScheduleDashboard() {
       window.removeEventListener("mouseup", handleUp);
     };
   }, [rangeSelect, pxPerDay]);
+
+  // 마일스톤 바 하나를 그림 — top(px)을 인자로 받아 기본 트랙/서브트랙 레인 어디에도 재사용
+  function renderMilestoneBar(m, s, e, top) {
+    const status = effectiveStatus(m, today);
+    const style = STATUS_STYLE[status];
+    const isDragging = dragState && dragState.milestoneId === m.id;
+    const dragDays = isDragging ? dragState.deltaDays || 0 : 0;
+    const dispS = dragDays ? new Date(s.getTime() + dragDays * 86400000) : s;
+    const dispE = dragDays ? new Date(e.getTime() + dragDays * 86400000) : e;
+    const left = xFor(dispS);
+    const width = Math.max(xFor(dispE) - xFor(dispS), 4);
+    const shortDate = (d) =>
+      `${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
+    return (
+      <div key={m.id} className="absolute" style={{ left, top, width: Math.max(width, 46) }}>
+        <div
+          className={`rounded-md border text-[11px] px-1.5 flex items-center overflow-hidden whitespace-nowrap select-none ${
+            isDragging ? "cursor-grabbing shadow-md" : "cursor-grab"
+          }`}
+          style={{
+            width,
+            height: 24,
+            background: style.bg,
+            borderColor: style.border,
+            color: style.text,
+          }}
+          onMouseEnter={() => !dragState && setHovered({ m, s, e, status })}
+          onMouseLeave={() => setHovered(null)}
+          onMouseDown={(evt) => {
+            evt.stopPropagation();
+            evt.preventDefault();
+            setDragState({
+              milestoneId: m.id,
+              startX: evt.clientX,
+              origStart: s,
+              origEnd: e,
+              deltaDays: 0,
+            });
+          }}
+          onClick={(evt) => evt.stopPropagation()}
+          title="끌어서 일정 변경"
+        >
+          {width > 60 ? m.name : ""}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
+          {shortDate(dispS)}~{shortDate(dispE)}
+        </div>
+      </div>
+    );
+  }
 
   const todayX = xFor(today);
 
@@ -501,6 +583,12 @@ export default function ScheduleDashboard() {
           <div className="flex items-center gap-1.5">
             <span className="inline-block w-2 h-2 rotate-45 bg-amber-400 border border-amber-600" />
             오픈예정일
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-indigo-500 text-white text-[8px] font-bold">
+              n
+            </span>
+            겹치는 일정(클릭시 카테고리별로 펼치기)
           </div>
         </div>
       </div>
@@ -593,6 +681,30 @@ export default function ScheduleDashboard() {
 
             const progress = projectProgress(pMilestones, today);
 
+            // 겹치는 마일스톤 클러스터 계산 — 클러스터가 2건 이상 겹치면 기본 트랙에선 점 마커로만 표시
+            const isSubtrackOpen = subtrackExpanded.has(p.id);
+            const clusters = buildOverlapClusters(dated);
+            const overlapClusters = clusters.filter((c) => c.items.length > 1);
+            const clusteredIds = new Set(
+              overlapClusters.flatMap((c) => c.items.map((x) => x.m.id))
+            );
+            const soloItems = dated.filter((x) => !clusteredIds.has(x.m.id));
+            // 서브트랙을 펼쳤을 때 카테고리별 레인 순서(처음 등장 순, 미분류는 맨 뒤)
+            const categoryLanes = [];
+            if (isSubtrackOpen) {
+              for (const c of overlapClusters) {
+                for (const item of c.items) {
+                  const cat = item.m.category || "미분류";
+                  if (!categoryLanes.includes(cat)) categoryLanes.push(cat);
+                }
+              }
+              categoryLanes.sort((a, b) =>
+                a === "미분류" ? 1 : b === "미분류" ? -1 : a.localeCompare(b, "ko")
+              );
+            }
+            const laneHeight = 34;
+            const rowHeight = 62 + categoryLanes.length * laneHeight;
+
             return (
               <div key={p.id} className="border-b border-slate-100">
                 <div
@@ -608,7 +720,7 @@ export default function ScheduleDashboard() {
                     handleDropReorder(p.id);
                   }}
                 >
-                  <div className="w-[280px] flex-shrink-0 border-r border-slate-200 px-4 py-3 flex items-start gap-2 sticky left-0 z-10 bg-white">
+                  <div className="relative w-[280px] flex-shrink-0 border-r border-slate-200 px-4 py-3 flex items-start gap-2 sticky left-0 z-10 bg-white">
                     <span
                       draggable
                       onDragStart={(evt) => {
@@ -669,10 +781,20 @@ export default function ScheduleDashboard() {
                         </span>
                       </div>
                     </div>
+                    {isSubtrackOpen &&
+                      categoryLanes.map((cat, i) => (
+                        <div
+                          key={cat}
+                          className="absolute left-4 text-[10px] font-medium text-slate-400 truncate max-w-[220px]"
+                          style={{ top: 10 + (i + 1) * laneHeight + 4 }}
+                        >
+                          {cat}
+                        </div>
+                      ))}
                   </div>
                   <div
                     className="relative flex-1 cursor-crosshair"
-                    style={{ width: totalWidth, height: 62 }}
+                    style={{ width: totalWidth, height: rowHeight }}
                     onMouseDown={(evt) => {
                       if (evt.button !== 0) return;
                       const rect = evt.currentTarget.getBoundingClientRect();
@@ -723,56 +845,49 @@ export default function ScheduleDashboard() {
                         <div className="w-2 h-2 rotate-45 bg-amber-400 border border-amber-600" />
                       </div>
                     )}
-                    {dated.map(({ m, s, e }) => {
-                      const status = effectiveStatus(m, today);
-                      const style = STATUS_STYLE[status];
-                      const isDragging = dragState && dragState.milestoneId === m.id;
-                      const dragDays = isDragging ? dragState.deltaDays || 0 : 0;
-                      const dispS = dragDays ? new Date(s.getTime() + dragDays * 86400000) : s;
-                      const dispE = dragDays ? new Date(e.getTime() + dragDays * 86400000) : e;
-                      const left = xFor(dispS);
-                      const width = Math.max(xFor(dispE) - xFor(dispS), 4);
-                      const shortDate = (d) =>
-                        `${String(d.getMonth() + 1).padStart(2, "0")}.${String(
-                          d.getDate()
-                        ).padStart(2, "0")}`;
-                      return (
-                        <div key={m.id} className="absolute" style={{ left, top: 10, width: Math.max(width, 46) }}>
-                          <div
-                            className={`rounded-md border text-[11px] px-1.5 flex items-center overflow-hidden whitespace-nowrap select-none ${
-                              isDragging ? "cursor-grabbing shadow-md" : "cursor-grab"
-                            }`}
-                            style={{
-                              width,
-                              height: 24,
-                              background: style.bg,
-                              borderColor: style.border,
-                              color: style.text,
-                            }}
-                            onMouseEnter={() => !dragState && setHovered({ m, s, e, status })}
-                            onMouseLeave={() => setHovered(null)}
-                            onMouseDown={(evt) => {
-                              evt.stopPropagation();
-                              evt.preventDefault();
-                              setDragState({
-                                milestoneId: m.id,
-                                startX: evt.clientX,
-                                origStart: s,
-                                origEnd: e,
-                                deltaDays: 0,
-                              });
-                            }}
-                            onClick={(evt) => evt.stopPropagation()}
-                            title="끌어서 일정 변경"
-                          >
-                            {width > 60 ? m.name : ""}
-                          </div>
-                          <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
-                            {shortDate(dispS)}~{shortDate(dispE)}
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {soloItems.map(({ m, s, e }) => renderMilestoneBar(m, s, e, 10))}
+                    {isSubtrackOpen
+                      ? overlapClusters.flatMap((c) =>
+                          c.items.map(({ m, s, e }) => {
+                            const laneIdx = categoryLanes.indexOf(m.category || "미분류");
+                            return renderMilestoneBar(m, s, e, 10 + (laneIdx + 1) * laneHeight);
+                          })
+                        )
+                      : overlapClusters.map((c) => {
+                          const clusterStart = c.items.reduce(
+                            (min, x) => (x.s < min ? x.s : min),
+                            c.items[0].s
+                          );
+                          const names = c.items.map((x) => x.m.name).join(", ");
+                          return (
+                            <div
+                              key={`cluster-${clusterStart.getTime()}`}
+                              className="absolute flex flex-col items-center cursor-pointer"
+                              style={{ left: xFor(clusterStart) - 3, top: 14 }}
+                              onClick={(evt) => {
+                                evt.stopPropagation();
+                                toggleSubtrack(p.id);
+                              }}
+                              title={`겹치는 일정 ${c.items.length}건: ${names} — 클릭해서 카테고리별로 펼치기`}
+                            >
+                              <span className="w-4 h-4 rounded-full bg-indigo-500 border-2 border-white shadow flex items-center justify-center text-[8px] text-white font-bold leading-none">
+                                {c.items.length}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    {isSubtrackOpen && overlapClusters.length > 0 && (
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1 text-[10px] text-indigo-400 hover:text-indigo-600 bg-white/90 px-1.5 py-0.5 rounded border border-indigo-100"
+                        onClick={(evt) => {
+                          evt.stopPropagation();
+                          toggleSubtrack(p.id);
+                        }}
+                      >
+                        ▲ 서브트랙 접기
+                      </button>
+                    )}
                     {dated.length === 0 && (
                       <div className="absolute left-3 top-4 text-[11px] text-slate-300">
                         일정 미입력
