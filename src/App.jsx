@@ -911,6 +911,31 @@ export default function App() {
     return `${parseInt(digits.slice(0, digits.length - 2), 10)}F`;
   }
 
+  // 호수 셀은 팀마다 표기가 제각각(콤마 구분, 마침표 구분, 공백 구분)이고
+  // 마침표로 구분한 값을 엑셀이 숫자로 잘못 인식해 "208.308.408.508" → 208308408508 처럼
+  // 구분자가 통째로 소실되는 경우도 있어, 이런 케이스까지 최대한 복구한다.
+  function parseRoomNumberTokens(raw) {
+    const str = String(raw || "").trim();
+    if (!str) return [];
+    let tokens = str
+      .split(/[,.\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    // 구분자가 소실되어 통짜 숫자 하나로 붙어버린 경우, 3자리 단위(호수 표기 관례)로 복구 시도
+    if (
+      tokens.length === 1 &&
+      /^\d+$/.test(tokens[0]) &&
+      tokens[0].length > 3 &&
+      tokens[0].length % 3 === 0
+    ) {
+      const digits = tokens[0];
+      const chunks = [];
+      for (let i = 0; i < digits.length; i += 3) chunks.push(digits.slice(i, i + 3));
+      tokens = chunks;
+    }
+    return tokens;
+  }
+
   function parseRoomTypeLabel(label) {
     const afterDash = label.split("-").slice(1).join("-").trim();
     const parenMatch = afterDash.match(/\(([^)]+)\)\s*$/);
@@ -963,7 +988,7 @@ export default function App() {
       for (const sheetName of wb.SheetNames) {
         const candidateRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: "" });
         scanned.push({ sheetName, preview: candidateRows.slice(0, 3) });
-        for (let i = 0; i < Math.min(candidateRows.length, 20); i++) {
+        for (let i = 0; i < Math.min(candidateRows.length, 200); i++) {
           const rawRow = candidateRows[i];
           const normedRow = rawRow.map((c) => norm(c));
           const normedKeyRow = rawRow.map((c) => normKey(c));
@@ -1045,12 +1070,12 @@ export default function App() {
           const label = String(row[colIdx.type] || "").trim();
           if (!label) continue;
           if (norm(label).includes("합계") || norm(label).includes("총계")) break;
+          const qtyRaw = String(row[colIdx.qty] ?? "").trim();
+          const qtyNum = qtyRaw === "" ? null : Number(qtyRaw.replace(/[^0-9.-]/g, ""));
+          if (qtyNum !== null && !Number.isNaN(qtyNum) && qtyNum === 0) continue; // 수량 0(운용 종료 등)이면 호수가 남아있어도 스킵
           const roomNumStr = String(row[colIdx.roomNumber] || "").trim();
           if (!roomNumStr) continue; // 호수 없는 행(부대시설 등)은 건너뜀
-          const roomNumbers = roomNumStr
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
+          const roomNumbers = parseRoomNumberTokens(roomNumStr);
           if (roomNumbers.length === 0) continue;
           const maxOcc = colIdx.maxOcc !== -1 ? String(row[colIdx.maxOcc] || "").trim() : "";
 
@@ -1103,10 +1128,7 @@ export default function App() {
           }
           const composition = String(row[colIdx["구성"]] || "");
           const hoStr = String(row[colIdx["호수"]] || "");
-          const roomNumbers = hoStr
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
+          const roomNumbers = parseRoomNumberTokens(hoStr);
 
           const { category, paren } = parseRoomTypeLabel(label);
           const { bed, mattressQty, bathtub, extraIrregular } = parseComposition(composition, paren);
