@@ -7,6 +7,8 @@ import {
 } from "recharts";
 
 import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, getCatalog, saveCatalog } from "./api";
+import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
+import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
 import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -938,7 +940,7 @@ export default function App() {
       ...prev,
       [roomTypeId]: [
         ...(prev[roomTypeId] || []),
-        { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 },
+        { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 },
       ],
     }));
   }
@@ -952,6 +954,8 @@ export default function App() {
         name: cols[0] || "",
         unitPrice: Math.max(0, parseFloat(cols[1] || "0") || 0),
         actualUnitPrice: 0,
+        installUnitPrice: 0,
+        installActualUnitPrice: 0,
         qtyPerRoom: cols[2] ? Math.max(0, parseFloat(cols[2]) || 0) : 1,
       }));
     if (parsed.length === 0) return;
@@ -976,7 +980,7 @@ export default function App() {
       ...prev,
       [roomTypeId]: [
         ...(prev[roomTypeId] || []),
-        ...basicPreset.map((p) => ({ id: nextId(), name: p.name, unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 })),
+        ...basicPreset.map((p) => ({ id: nextId(), name: p.name, unitPrice: 0, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 })),
       ],
     }));
   }
@@ -998,7 +1002,7 @@ export default function App() {
   }
 
   function addOseItem() {
-    setOseItems((prev) => [...prev, { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, qtyPerRoom: 1 }]);
+    setOseItems((prev) => [...prev, { id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 }]);
   }
   function bulkAddOseItems(rows) {
     const parsed = rows
@@ -1010,6 +1014,8 @@ export default function App() {
         name: cols[0] || "",
         unitPrice: Math.max(0, parseFloat(cols[1] || "0") || 0),
         actualUnitPrice: 0,
+        installUnitPrice: 0,
+        installActualUnitPrice: 0,
         qtyPerRoom: cols[2] ? Math.max(0, parseFloat(cols[2]) || 0) : 1,
       }));
     if (parsed.length === 0) return;
@@ -1229,6 +1235,7 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
   const [saveError, setSaveError] = useState("");
+  const [supabaseSyncError, setSupabaseSyncError] = useState("");
   const [loadNotice, setLoadNotice] = useState("");
   const [projectList, setProjectList] = useState([]); // [{id, name}]
   const [currentProjectId, setCurrentProjectId] = useState(null);
@@ -1390,6 +1397,15 @@ export default function App() {
       const updatedList = projectList.map((p) => (p.id === currentProjectId ? { ...p, name: projectName || p.name } : p));
       setProjectList(updatedList);
       await saveProjectIndex(updatedList);
+      // Supabase room_types/order_items 동기화 — 기존 Apps Script 저장(위 로직)이 여전히 주 저장소이므로
+      // 여기서 실패해도 전체 저장 실패로 취급하지 않고 별도 경고만 표시한다 (단계적 이전 중)
+      try {
+        const roomTypeIdMap = await saveRoomTypes(currentProjectId, roomTypes);
+        await saveOrderItems(currentProjectId, ffeItems, oseItems, roomTypeIdMap);
+        setSupabaseSyncError("");
+      } catch (syncErr) {
+        setSupabaseSyncError("Supabase 동기화에 실패했어요(기본 저장은 정상 완료됨).");
+      }
     } catch (err) {
       setSaveError("저장에 실패했어요. 잠시 후 다시 시도해주세요.");
     } finally {
@@ -1573,14 +1589,14 @@ export default function App() {
     if (pickerOpenFor === "OSE") {
       setOseItems((prev) => [
         ...prev,
-        ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, qtyPerRoom: 1 })),
+        ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 })),
       ]);
     } else {
       setFfeItems((prev) => ({
         ...prev,
         [pickerOpenFor]: [
           ...(prev[pickerOpenFor] || []),
-          ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, qtyPerRoom: 1 })),
+          ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 })),
         ],
       }));
     }
@@ -1952,6 +1968,14 @@ export default function App() {
         {loadNotice && (
           <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2 -mt-4">
             {loadNotice}
+          </p>
+        )}
+        {supabaseSyncError && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-4 flex items-center justify-between">
+            <span>{supabaseSyncError}</span>
+            <button onClick={() => setSupabaseSyncError("")} className="text-amber-500 hover:text-amber-800" title="닫기">
+              <X size={12} />
+            </button>
           </p>
         )}
 
@@ -2830,11 +2854,11 @@ export default function App() {
                 const items = ffeItems[rt.id] || [];
                 const roomCount = roomTypeTotal(rt);
                 const typeTotal = items.reduce(
-                  (sum, it) => sum + it.unitPrice * it.qtyPerRoom * roomCount,
+                  (sum, it) => sum + (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * roomCount,
                   0
                 );
                 const typeActualTotal = items.reduce(
-                  (sum, it) => sum + (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount,
+                  (sum, it) => sum + ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * roomCount,
                   0
                 );
                 return (
@@ -2944,8 +2968,10 @@ export default function App() {
                         <thead>
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                             <th className="py-1.5 font-normal">품목명</th>
-                            <th className="py-1.5 font-normal text-right">예산단가</th>
-                            <th className="py-1.5 font-normal text-right">집행단가</th>
+                            <th className="py-1.5 font-normal text-right">공급예산단가</th>
+                            <th className="py-1.5 font-normal text-right">공급집행단가</th>
+                            <th className="py-1.5 font-normal text-right">설치예산단가</th>
+                            <th className="py-1.5 font-normal text-right">설치집행단가</th>
                             <th className="py-1.5 font-normal text-right">실당 수량</th>
                             <th className="py-1.5 font-normal text-right">필요 수량</th>
                             <th className="py-1.5 font-normal text-right">예산금액</th>
@@ -2986,6 +3012,24 @@ export default function App() {
                                 <input
                                   type="number"
                                   min="0"
+                                  value={it.installUnitPrice || 0}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "installUnitPrice", e.target.value)}
+                                  className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-amber-50/30"
+                                />
+                              </td>
+                              <td className="py-1.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={it.installActualUnitPrice || 0}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "installActualUnitPrice", e.target.value)}
+                                  className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                                />
+                              </td>
+                              <td className="py-1.5">
+                                <input
+                                  type="number"
+                                  min="0"
                                   step="0.1"
                                   value={it.qtyPerRoom}
                                   onChange={(e) => updateFfeItem(rt.id, it.id, "qtyPerRoom", e.target.value)}
@@ -2996,10 +3040,10 @@ export default function App() {
                                 {(it.qtyPerRoom * roomCount).toLocaleString("ko-KR")}
                               </td>
                               <td className="py-1.5 text-right font-medium">
-                                {won(it.unitPrice * it.qtyPerRoom * roomCount)}
+                                {won((it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * roomCount)}
                               </td>
                               <td className="py-1.5 text-right font-medium text-teal-700">
-                                {won((it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount)}
+                                {won(((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * roomCount)}
                               </td>
                               <td className="py-1.5 pl-2">
                                 <button
@@ -3097,8 +3141,10 @@ export default function App() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-1.5 font-normal">품목명</th>
-                  <th className="py-1.5 font-normal text-right">예산단가</th>
-                  <th className="py-1.5 font-normal text-right">집행단가</th>
+                  <th className="py-1.5 font-normal text-right">공급예산단가</th>
+                  <th className="py-1.5 font-normal text-right">공급집행단가</th>
+                  <th className="py-1.5 font-normal text-right">설치예산단가</th>
+                  <th className="py-1.5 font-normal text-right">설치집행단가</th>
                   <th className="py-1.5 font-normal text-right">실당 수량</th>
                   <th className="py-1.5 font-normal text-right">필요 수량</th>
                   <th className="py-1.5 font-normal text-right">예산금액</th>
@@ -3139,6 +3185,24 @@ export default function App() {
                       <input
                         type="number"
                         min="0"
+                        value={it.installUnitPrice || 0}
+                        onChange={(e) => updateOseItem(it.id, "installUnitPrice", e.target.value)}
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-amber-50/30"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.installActualUnitPrice || 0}
+                        onChange={(e) => updateOseItem(it.id, "installActualUnitPrice", e.target.value)}
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
                         step="0.1"
                         value={it.qtyPerRoom}
                         onChange={(e) => updateOseItem(it.id, "qtyPerRoom", e.target.value)}
@@ -3149,10 +3213,10 @@ export default function App() {
                       {(it.qtyPerRoom * grandTotal).toLocaleString("ko-KR")}
                     </td>
                     <td className="py-1.5 text-right font-medium">
-                      {won(it.unitPrice * it.qtyPerRoom * grandTotal)}
+                      {won((it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal)}
                     </td>
                     <td className="py-1.5 text-right font-medium text-teal-700">
-                      {won((it.actualUnitPrice || 0) * it.qtyPerRoom * grandTotal)}
+                      {won(((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * grandTotal)}
                     </td>
                     <td className="py-1.5 pl-2">
                       <button onClick={() => removeOseItem(it.id)} className="text-slate-400 hover:text-rose-600">
@@ -3201,10 +3265,10 @@ export default function App() {
                   const ffeTotal = roomTypes.reduce((sum, rt) => {
                     const items = ffeItems[rt.id] || [];
                     const roomCount = roomTypeTotal(rt);
-                    return sum + items.reduce((s, it) => s + it.unitPrice * it.qtyPerRoom * roomCount, 0);
+                    return sum + items.reduce((s, it) => s + (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * roomCount, 0);
                   }, 0);
                   const oseTotal = oseItems.reduce(
-                    (sum, it) => sum + it.unitPrice * it.qtyPerRoom * grandTotal,
+                    (sum, it) => sum + (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal,
                     0
                   );
                   return (
@@ -3225,9 +3289,9 @@ export default function App() {
         {roomTypes.length > 0 &&
           (() => {
             const sumBudget = (items, roomCountFn) =>
-              items.reduce((s, it) => s + it.unitPrice * it.qtyPerRoom * roomCountFn(it), 0);
+              items.reduce((s, it) => s + (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * roomCountFn(it), 0);
             const sumActual = (items, roomCountFn) =>
-              items.reduce((s, it) => s + (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCountFn(it), 0);
+              items.reduce((s, it) => s + ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * roomCountFn(it), 0);
 
             let ffeBudget = 0;
             let ffeActual = 0;
@@ -3281,16 +3345,16 @@ export default function App() {
               (ffeItems[rt.id] || []).forEach((it) => {
                 if (!it.name) return;
                 const cur = itemAgg.get(it.name) || { name: it.name, budget: 0, actual: 0 };
-                cur.budget += it.unitPrice * it.qtyPerRoom * roomCount;
-                cur.actual += (it.actualUnitPrice || 0) * it.qtyPerRoom * roomCount;
+                cur.budget += (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * roomCount;
+                cur.actual += ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * roomCount;
                 itemAgg.set(it.name, cur);
               });
             });
             oseItems.forEach((it) => {
               if (!it.name) return;
               const cur = itemAgg.get(it.name) || { name: it.name, budget: 0, actual: 0 };
-              cur.budget += it.unitPrice * it.qtyPerRoom * grandTotal;
-              cur.actual += (it.actualUnitPrice || 0) * it.qtyPerRoom * grandTotal;
+              cur.budget += (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
+              cur.actual += ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
               itemAgg.set(it.name, cur);
             });
             const itemAggRows = [...itemAgg.values()].sort((a, b) => b.budget - a.budget);
