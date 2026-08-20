@@ -951,11 +951,13 @@ export default function App() {
       const wb = XLSX.read(buf, { type: "array" });
 
       const norm = (s) => String(s).replace(/\s+/g, "").trim();
+      const normKey = (s) => norm(s).toLowerCase().replace(/['’]/g, "");
       const HEADER_KEYS = ["룸타입", "수량", "인원", "구성", "호수"];
 
       let rows = null;
       let headerIdx = -1;
       let colIdx = {};
+      let format = null; // "A"(구성+호수 상세형) | "B"(설계팀 룸믹스: Room type/Q'ty/Room number)
       const scanned = []; // for diagnostics if nothing matches
 
       for (const sheetName of wb.SheetNames) {
@@ -964,24 +966,53 @@ export default function App() {
         for (let i = 0; i < Math.min(candidateRows.length, 20); i++) {
           const rawRow = candidateRows[i];
           const normedRow = rawRow.map((c) => norm(c));
-          // "호수" 컬럼 존재 여부를 기준으로 헤더 행을 판단 (가장 구분력 높은 컬럼)
-          const hoIdx = normedRow.findIndex((c) => c.includes("호수"));
-          if (hoIdx === -1) continue;
-          const guessedCols = {};
-          HEADER_KEYS.forEach((key) => {
-            const idx = normedRow.findIndex((c) => c.includes(key));
-            if (idx !== -1) guessedCols[key] = idx;
-          });
-          if (guessedCols["룸타입"] === undefined) {
-            // "룸타입" 정확히 없으면 "타입"이 들어간 첫 컬럼으로 대체 추정
-            const altIdx = normedRow.findIndex((c) => c.includes("타입"));
-            if (altIdx !== -1) guessedCols["룸타입"] = altIdx;
+          const normedKeyRow = rawRow.map((c) => normKey(c));
+
+          // ---- Format A: 회사 관리시트("구성"+"호수" 상세형) ----
+          const hoIdxA = normedRow.findIndex((c) => c.includes("호수"));
+          if (hoIdxA !== -1) {
+            const guessedCols = {};
+            ["룸타입", "구성"].forEach((key) => {
+              const idx = normedRow.findIndex((c) => c.includes(key));
+              if (idx !== -1) guessedCols[key] = idx;
+            });
+            if (guessedCols["룸타입"] === undefined) {
+              const altIdx = normedRow.findIndex((c) => c.includes("타입"));
+              if (altIdx !== -1) guessedCols["룸타입"] = altIdx;
+            }
+            if (guessedCols["룸타입"] !== undefined && guessedCols["구성"] !== undefined) {
+              rows = candidateRows;
+              headerIdx = i;
+              colIdx = { ...guessedCols, 호수: hoIdxA };
+              format = "A";
+              break;
+            }
           }
-          if (guessedCols["룸타입"] === undefined || guessedCols["구성"] === undefined) continue;
-          rows = candidateRows;
-          headerIdx = i;
-          colIdx = guessedCols;
-          break;
+
+          // ---- Format B: 설계팀 룸믹스("객실타입별 수량" 표 — Room type/Q'ty/Room number) ----
+          const roomNumIdx =
+            hoIdxA !== -1 ? hoIdxA : normedKeyRow.findIndex((c) => c.includes("roomnumber"));
+          const qtyIdx =
+            normedKeyRow.findIndex((c) => c.includes("qty")) !== -1
+              ? normedKeyRow.findIndex((c) => c.includes("qty"))
+              : normedRow.findIndex((c) => c.includes("수량"));
+          const typeIdx =
+            normedRow.findIndex((c) => c.includes("룸타입")) !== -1
+              ? normedRow.findIndex((c) => c.includes("룸타입"))
+              : normedKeyRow.findIndex((c) => c.includes("roomtype")) !== -1
+              ? normedKeyRow.findIndex((c) => c.includes("roomtype"))
+              : normedRow.findIndex((c) => c.includes("타입"));
+          if (roomNumIdx !== -1 && qtyIdx !== -1 && typeIdx !== -1) {
+            const maxOccIdx =
+              normedRow.findIndex((c) => c.includes("최대인원")) !== -1
+                ? normedRow.findIndex((c) => c.includes("최대인원"))
+                : normedKeyRow.findIndex((c) => c.includes("maxocc"));
+            rows = candidateRows;
+            headerIdx = i;
+            colIdx = { type: typeIdx, qty: qtyIdx, roomNumber: roomNumIdx, maxOcc: maxOccIdx };
+            format = "B";
+            break;
+          }
         }
         if (headerIdx !== -1) break;
       }
@@ -995,7 +1026,7 @@ export default function App() {
           )
           .join("\n");
         setImportError(
-          `헤더 행("룸타입", "구성", "호수" 등)을 찾지 못했어요. 열 이름에 "호수"와 "구성"이 포함된 헤더 행이 있는지 확인해주세요.\n\n실제로 읽은 내용:\n${detail}`
+          `헤더 행("룸타입"+"구성"+"호수", 또는 "Room type"+"Q'ty"+"Room number")을 찾지 못했어요.\n\n실제로 읽은 내용:\n${detail}`
         );
         return;
       }
@@ -1006,62 +1037,118 @@ export default function App() {
       const floorSet = new Set(floors);
       let facilityCount = 0;
 
-      for (let i = headerIdx + 1; i < rows.length; i++) {
-        const row = rows[i];
-        const label = String(row[colIdx["룸타입"]] || "").trim();
-        if (!label) continue;
-        if (label === "총계" || label.includes("총 계")) break;
-        if (!label.startsWith("ROOM(")) {
-          facilityCount++;
-          continue;
+      if (format === "B") {
+        // 설계팀 룸믹스: 행 하나 = 룸타입 하나. 침대타입/욕조유무/객실등급은 라벨에서 추측하지 않고
+        // 기본값(퀸/무/Superior)으로 두고 사용자가 직접 보완하는 방식으로 확정함.
+        for (let i = headerIdx + 1; i < rows.length; i++) {
+          const row = rows[i];
+          const label = String(row[colIdx.type] || "").trim();
+          if (!label) continue;
+          if (norm(label).includes("합계") || norm(label).includes("총계")) break;
+          const roomNumStr = String(row[colIdx.roomNumber] || "").trim();
+          if (!roomNumStr) continue; // 호수 없는 행(부대시설 등)은 건너뜀
+          const roomNumbers = roomNumStr
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (roomNumbers.length === 0) continue;
+          const maxOcc = colIdx.maxOcc !== -1 ? String(row[colIdx.maxOcc] || "").trim() : "";
+
+          newCategories.add(label);
+
+          const byFloor = {};
+          roomNumbers.forEach((num) => {
+            const f = floorFromRoomNumber(num);
+            if (!f) return;
+            floorSet.add(f);
+            byFloor[f] = (byFloor[f] || 0) + 1;
+          });
+
+          newRoomTypes.push({
+            id: nextId(),
+            bed: "퀸",
+            bathtub: "무",
+            category: label,
+            irregular: [],
+            mattressQty: 1,
+            grade: "Superior",
+            features: [],
+            view: "",
+            includeBedInName: false,
+            includeViewInName: false,
+            customName: label,
+            otaBedCount: "",
+            otaBedSize: "",
+            otaMaxOccupancy: maxOcc,
+            otaFacilities: "",
+            roomNumbers,
+            sourceLabel: label,
+            byFloor,
+          });
         }
-        const composition = String(row[colIdx["구성"]] || "");
-        const hoStr = String(row[colIdx["호수"]] || "");
-        const roomNumbers = hoStr
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
 
-        const { category, paren } = parseRoomTypeLabel(label);
-        const { bed, mattressQty, bathtub, extraIrregular } = parseComposition(composition, paren);
+        if (newRoomTypes.length === 0) {
+          setImportError('"Room number" 열에 호수가 채워진 행을 찾지 못했어요.');
+          return;
+        }
+      } else {
+        for (let i = headerIdx + 1; i < rows.length; i++) {
+          const row = rows[i];
+          const label = String(row[colIdx["룸타입"]] || "").trim();
+          if (!label) continue;
+          if (label === "총계" || label.includes("총 계")) break;
+          if (!label.startsWith("ROOM(")) {
+            facilityCount++;
+            continue;
+          }
+          const composition = String(row[colIdx["구성"]] || "");
+          const hoStr = String(row[colIdx["호수"]] || "");
+          const roomNumbers = hoStr
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
 
-        newCategories.add(category);
-        extraIrregular.forEach((o) => newIrregular.add(o));
+          const { category, paren } = parseRoomTypeLabel(label);
+          const { bed, mattressQty, bathtub, extraIrregular } = parseComposition(composition, paren);
 
-        const byFloor = {};
-        roomNumbers.forEach((num) => {
-          const f = floorFromRoomNumber(num);
-          if (!f) return;
-          floorSet.add(f);
-          byFloor[f] = (byFloor[f] || 0) + 1;
-        });
+          newCategories.add(category);
+          extraIrregular.forEach((o) => newIrregular.add(o));
 
-        newRoomTypes.push({
-          id: nextId(),
-          bed,
-          bathtub,
-          category,
-          irregular: extraIrregular,
-          mattressQty,
-          grade: "Superior",
-          features: [],
-          view: "",
-          includeBedInName: false,
-          includeViewInName: false,
-          customName: "",
-          otaBedCount: "",
-          otaBedSize: "",
-          otaMaxOccupancy: "",
-          otaFacilities: "",
-          roomNumbers,
-          sourceLabel: label.split("-")[0].trim(),
-          byFloor,
-        });
-      }
+          const byFloor = {};
+          roomNumbers.forEach((num) => {
+            const f = floorFromRoomNumber(num);
+            if (!f) return;
+            floorSet.add(f);
+            byFloor[f] = (byFloor[f] || 0) + 1;
+          });
 
-      if (newRoomTypes.length === 0) {
-        setImportError('"ROOM(...)" 형식의 룸타입 행을 찾지 못했어요.');
-        return;
+          newRoomTypes.push({
+            id: nextId(),
+            bed,
+            bathtub,
+            category,
+            irregular: extraIrregular,
+            mattressQty,
+            grade: "Superior",
+            features: [],
+            view: "",
+            includeBedInName: false,
+            includeViewInName: false,
+            customName: "",
+            otaBedCount: "",
+            otaBedSize: "",
+            otaMaxOccupancy: "",
+            otaFacilities: "",
+            roomNumbers,
+            sourceLabel: label.split("-")[0].trim(),
+            byFloor,
+          });
+        }
+
+        if (newRoomTypes.length === 0) {
+          setImportError('"ROOM(...)" 형식의 룸타입 행을 찾지 못했어요.');
+          return;
+        }
       }
 
       const finalFloors = sortFloors([...floorSet]);
@@ -1104,8 +1191,10 @@ export default function App() {
 
       const totalRooms = newRoomTypes.reduce((s, rt) => s + rt.roomNumbers.length, 0);
       setImportSummary(
-        `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.` +
-          (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "") +
+        (format === "B"
+          ? `설계팀 룸믹스 형식으로 인식했어요. 룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요. 침대타입·욕조유무·객실등급은 기본값으로 채워졌으니 필요하면 직접 수정해주세요.`
+          : `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.` +
+            (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "")) +
           (overwriteOnImport ? " 기존에 같은 룸타입이 있으면 덮어썼어요." : "")
       );
     } catch (err) {
@@ -1377,6 +1466,9 @@ export default function App() {
           </div>
           <p className="text-xs text-slate-400 mt-2">
             "룸타입 / 수량 / 인원 / 구성 / 호수" 열이 있는 시트를 올리면, 룸타입·속성·층별 배치·호수까지 한 번에 채워드려요.
+            <br />
+            설계팀에서 넘어오는 "Room type / Q'ty / 최대인원 / Room number" 형식의 룸믹스 시트도 자동으로 인식해요 —
+            이 경우 침대타입·욕조유무·객실등급은 기본값(퀸·무·Superior)으로 채워지니 필요하면 직접 수정해주세요.
           </p>
           <label className="flex items-center gap-1.5 text-xs text-slate-500 mt-2 cursor-pointer w-fit">
             <input
