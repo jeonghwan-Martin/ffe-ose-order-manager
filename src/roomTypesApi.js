@@ -11,10 +11,19 @@ const sbHeaders = {
   "Content-Type": "application/json",
 };
 
+// App.jsx의 codeFor(rt)와 동일한 규칙 — room_types.code는 NOT NULL이라 반드시 채워야 함
+function codeFor(rt) {
+  const bed = rt.bed === "싱글" ? "S" : "Q";
+  const bath = rt.bathtub === "유" ? "B" : "NB";
+  const cat = (rt.category || "").slice(0, 2) || "RT";
+  return `${cat}-${bed}-${bath}`;
+}
+
 function toRow(rt, projectId) {
   return {
     project_id: projectId,
     client_id: String(rt.id),
+    code: codeFor(rt),
     bed_type: rt.bed ?? null,
     has_bathtub: !!rt.bathtub,
     category: rt.category ?? null,
