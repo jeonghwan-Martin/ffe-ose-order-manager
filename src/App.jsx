@@ -9,6 +9,7 @@ import {
 import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, getCatalog, saveCatalog } from "./api";
 import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
 import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
+import { saveExpenses, loadExpenses } from "./expensesApi";
 import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -1402,6 +1403,7 @@ export default function App() {
       try {
         const roomTypeIdMap = await saveRoomTypes(currentProjectId, roomTypes);
         await saveOrderItems(currentProjectId, ffeItems, oseItems, roomTypeIdMap);
+        await saveExpenses(currentProjectId, { siteExpenses, laborExpenses, extraExpenses });
         setSupabaseSyncError("");
       } catch (syncErr) {
         setSupabaseSyncError("Supabase 동기화에 실패했어요(기본 저장은 정상 완료됨).");
