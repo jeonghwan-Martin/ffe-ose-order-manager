@@ -34,12 +34,13 @@ function toRow(rt, projectId) {
   };
 }
 
+// projectUuid: projectIdApi.resolveProjectUuid()로 확보한 Supabase projects.id(uuid)
 // roomTypes(App.jsx 로컬 상태)를 Supabase room_types와 동기화(client_id 기준 upsert, 삭제된 항목 제거)
 // 반환값: { [localId]: supabaseUuid } — order_items 저장 시 room_type_id FK 채우는 데 사용
-export async function saveRoomTypes(projectId, roomTypes) {
+export async function saveRoomTypes(projectUuid, roomTypes) {
   // 1) 이 프로젝트에서 사라진 룸타입(더 이상 로컬에 없는 client_id) 삭제
   const existingRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/room_types?project_id=eq.${projectId}&select=id,client_id`,
+    `${SUPABASE_URL}/rest/v1/room_types?project_id=eq.${projectUuid}&select=id,client_id`,
     { headers: sbHeaders }
   );
   if (!existingRes.ok) throw new Error(`room_types 조회 실패 (${existingRes.status})`);
@@ -58,7 +59,7 @@ export async function saveRoomTypes(projectId, roomTypes) {
   if (roomTypes.length === 0) return {};
 
   // 2) upsert (client_id, project_id 유니크 인덱스 기준)
-  const rows = roomTypes.map((rt) => toRow(rt, projectId));
+  const rows = roomTypes.map((rt) => toRow(rt, projectUuid));
   const upsertRes = await fetch(
     `${SUPABASE_URL}/rest/v1/room_types?on_conflict=project_id,client_id`,
     {

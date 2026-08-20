@@ -10,6 +10,8 @@ import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, get
 import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
 import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
 import { saveExpenses, loadExpenses } from "./expensesApi";
+import { resolveProjectUuid } from "./projectIdApi";
+import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
 import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -1401,9 +1403,13 @@ export default function App() {
       // Supabase room_types/order_items 동기화 — 기존 Apps Script 저장(위 로직)이 여전히 주 저장소이므로
       // 여기서 실패해도 전체 저장 실패로 취급하지 않고 별도 경고만 표시한다 (단계적 이전 중)
       try {
-        const roomTypeIdMap = await saveRoomTypes(currentProjectId, roomTypes);
-        await saveOrderItems(currentProjectId, ffeItems, oseItems, roomTypeIdMap);
-        await saveExpenses(currentProjectId, { siteExpenses, laborExpenses, extraExpenses });
+        const projectUuid = await resolveProjectUuid(currentProjectId, projectName);
+        const roomTypeIdMap = await saveRoomTypes(projectUuid, roomTypes);
+        await saveOrderItems(projectUuid, ffeItems, oseItems, roomTypeIdMap);
+        await saveExpenses(projectUuid, { siteExpenses, laborExpenses, extraExpenses });
+        await saveProjectSettings(projectUuid, {
+          categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset,
+        });
         setSupabaseSyncError("");
       } catch (syncErr) {
         setSupabaseSyncError("Supabase 동기화에 실패했어요(기본 저장은 정상 완료됨).");
