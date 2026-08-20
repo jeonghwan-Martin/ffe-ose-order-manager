@@ -182,6 +182,21 @@ export default function App() {
   const [projectName, setProjectName] = useState("");
   const [tier, setTier] = useState(TIERS[2]);
   const [totalBudget, setTotalBudget] = useState(0); // 전체 공사비 중 오픈바이징팀에 배정된 예산
+  // 목표 객실수 + 실당 예산: 둘 다 입력하면 오픈바이징 배정 예산을 자동 계산해준다.
+  // (자동계산은 이 두 필드를 직접 건드릴 때만 일어남 — totalBudget을 직접 수정하면 그 값 그대로 유지됨)
+  const [targetRoomCount, setTargetRoomCount] = useState(0);
+  const [budgetPerRoom, setBudgetPerRoom] = useState(0);
+
+  function handleTargetRoomCountChange(value) {
+    const n = Math.max(0, parseInt(value || "0", 10) || 0);
+    setTargetRoomCount(n);
+    if (budgetPerRoom > 0) setTotalBudget(n * budgetPerRoom);
+  }
+  function handleBudgetPerRoomChange(value) {
+    const n = Math.max(0, parseFloat(value || "0") || 0);
+    setBudgetPerRoom(n);
+    if (targetRoomCount > 0) setTotalBudget(targetRoomCount * n);
+  }
 
   const [categories, setCategories] = useState(["트윈", "더블", "패밀리", "스위트"]);
   const [newCategory, setNewCategory] = useState("");
@@ -589,6 +604,8 @@ export default function App() {
     setProjectName("");
     setTier(TIERS[2]);
     setTotalBudget(0);
+    setTargetRoomCount(0);
+    setBudgetPerRoom(0);
     setCategories(["트윈", "더블", "패밀리", "스위트"]);
     setIrregularOptions(["마사지체어", "발코니", "복층"]);
     setBrandRoomName("");
@@ -609,6 +626,8 @@ export default function App() {
     if (data.projectName !== undefined) setProjectName(data.projectName);
     if (data.tier) setTier(data.tier);
     if (data.totalBudget !== undefined) setTotalBudget(data.totalBudget);
+    if (data.targetRoomCount !== undefined) setTargetRoomCount(data.targetRoomCount);
+    if (data.budgetPerRoom !== undefined) setBudgetPerRoom(data.budgetPerRoom);
     if (data.categories) setCategories(data.categories);
     if (data.irregularOptions) setIrregularOptions(data.irregularOptions);
     if (data.brandRoomName !== undefined) setBrandRoomName(data.brandRoomName);
@@ -731,6 +750,8 @@ export default function App() {
       projectName,
       tier,
       totalBudget,
+      targetRoomCount,
+      budgetPerRoom,
       categories,
       irregularOptions,
       brandRoomName,
@@ -1248,6 +1269,34 @@ export default function App() {
               </select>
             </div>
             <div>
+              <label className="block text-xs text-slate-500 mb-1">목표 객실수</label>
+              <input
+                type="number"
+                min="0"
+                value={targetRoomCount}
+                onChange={(e) => handleTargetRoomCountChange(e.target.value)}
+                placeholder="예: 42"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                아래 룸타입·층별 배치가 이 숫자를 목표로 채워지는지 실시간으로 보여줘요.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">실당 예산</label>
+              <input
+                type="number"
+                min="0"
+                value={budgetPerRoom}
+                onChange={(e) => handleBudgetPerRoomChange(e.target.value)}
+                placeholder="예: 3500000"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                목표 객실수와 함께 입력하면 아래 배정 예산이 자동 계산돼요.
+              </p>
+            </div>
+            <div>
               <label className="block text-xs text-slate-500 mb-1">오픈바이징 배정 예산 (전체 공사비 중)</label>
               <input
                 type="number"
@@ -1257,6 +1306,11 @@ export default function App() {
                 placeholder="예: 500000000"
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
               />
+              {targetRoomCount > 0 && budgetPerRoom > 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">
+                  목표 객실수 × 실당 예산으로 자동 계산됨 (직접 수정하면 그 값 그대로 유지돼요)
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs text-slate-500 mb-1">
@@ -1273,6 +1327,39 @@ export default function App() {
               </p>
             </div>
           </div>
+          {targetRoomCount > 0 && (
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs text-slate-500">
+                  객실 배치 현황 — {grandTotal} / {targetRoomCount}실
+                  {grandTotal < targetRoomCount && (
+                    <span className="text-amber-600"> ({targetRoomCount - grandTotal}실 남음)</span>
+                  )}
+                  {grandTotal === targetRoomCount && (
+                    <span className="text-emerald-600 font-medium"> 배치 완료</span>
+                  )}
+                  {grandTotal > targetRoomCount && (
+                    <span className="text-rose-600 font-medium"> ({grandTotal - targetRoomCount}실 초과)</span>
+                  )}
+                </span>
+                <span className="text-xs text-slate-400">
+                  {targetRoomCount > 0 ? Math.round((grandTotal / targetRoomCount) * 100) : 0}%
+                </span>
+              </div>
+              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    grandTotal > targetRoomCount
+                      ? "bg-rose-500"
+                      : grandTotal === targetRoomCount
+                      ? "bg-emerald-500"
+                      : "bg-amber-500"
+                  }`}
+                  style={{ width: `${Math.min(100, (grandTotal / targetRoomCount) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Excel bulk import */}
