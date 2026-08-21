@@ -23,7 +23,7 @@ function toRow(it, { projectId, roomTypeId }) {
     room_type_id: roomTypeId || null,
     common_area_id: null,
     item_name: it.name || "",
-    quantity: it.qtyPerRoom || 0,
+    quantity: it.qtyPerRoom || 0, // 기준수량(룸당/인당/침대당) — 총 발주수량은 계산근거(base_calc_basis)와 함께 화면에서 산출
     supply_budget_unit_price: it.unitPrice || 0,
     supply_actual_unit_price: it.actualUnitPrice || 0,
     install_budget_unit_price: it.installUnitPrice || 0,
@@ -31,6 +31,10 @@ function toRow(it, { projectId, roomTypeId }) {
     category_group: it.categoryGroup ?? null,
     sub_category: it.subCategory ?? null,
     order_owner: it.orderOwner ?? null,
+    catalog_item_id: it.catalogItemId ?? null,
+    applied_multiplier: it.multiplier != null ? it.multiplier : null,
+    base_calc_basis: it.calcBasis ?? null,
+    mattress_size: it.mattressSize ?? null,
   };
 }
 
@@ -47,6 +51,10 @@ function fromRow(row) {
     subCategory: row.sub_category,
     orderOwner: row.order_owner,
     roomTypeId: row.room_type_id,
+    catalogItemId: row.catalog_item_id,
+    multiplier: row.applied_multiplier != null ? Number(row.applied_multiplier) : 1,
+    calcBasis: row.base_calc_basis || "room",
+    mattressSize: row.mattress_size,
   };
 }
 
