@@ -47,3 +47,28 @@ export async function fetchContentPresets(category) {
     };
   });
 }
+
+// OS&E(공통 품목) 전용 — content_presets 중 room 기준(calc_basis='room') 공통베이스만 조회.
+// OS&E는 특정 룸타입에 묶이지 않는 프로젝트 전체 공통 품목이라 capacity/bed축(룸타입별 인원·침대구성 필요)은
+// 여기서 계산할 수 없음 — 그 축의 품목(린넨류 등)은 기존처럼 FF&E 쪽(룸타입별 카드)에서 불러오는 게 맞음.
+// OS&E 화면엔 별도 multiplier 컬럼이 없으므로 default_qty×default_multiplier를 미리 곱해 qtyPerRoom 하나로 반환.
+export async function fetchOseContentPresets() {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price)`,
+    { headers: sbHeaders }
+  );
+  if (!res.ok) throw new Error(`content_presets(OS&E) 조회 실패 (${res.status})`);
+  const rows = await res.json();
+  return rows
+    .filter((row) => (row.catalog_items?.calc_basis || "room") === "room")
+    .map((row) => {
+      const ci = row.catalog_items || {};
+      const mult = row.default_multiplier != null ? Number(row.default_multiplier) : 1;
+      return {
+        name: row.item_name ?? ci.item_name ?? "",
+        catalogItemId: row.catalog_item_id ?? null,
+        unitPrice: Number(ci.reference_supply_price) || 0,
+        qtyPerRoom: (Number(row.default_qty) || 0) * mult,
+      };
+    });
+}

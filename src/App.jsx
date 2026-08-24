@@ -12,7 +12,7 @@ import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
 import { saveExpenses, loadExpenses } from "./expensesApi";
 import { resolveProjectUuid } from "./projectIdApi";
 import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
-import { fetchContentPresets } from "./contentPresetsApi";
+import { fetchContentPresets, fetchOseContentPresets } from "./contentPresetsApi";
 import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -414,6 +414,32 @@ export default function App() {
   }
   function removeOseItem(itemId) {
     setOseItems((prev) => prev.filter((it) => it.id !== itemId));
+  }
+
+  // Supabase content_presets(room 기준 공통베이스)를 OS&E 공통 품목 리스트에 불러와 채워넣음
+  const [loadingOsePreset, setLoadingOsePreset] = useState(false);
+  const [osePresetError, setOsePresetError] = useState("");
+  async function loadCatalogPresetForOse() {
+    setLoadingOsePreset(true);
+    setOsePresetError("");
+    try {
+      const presets = await fetchOseContentPresets();
+      const newItems = presets.map((p) => ({
+        id: nextId(),
+        name: p.name,
+        unitPrice: p.unitPrice,
+        actualUnitPrice: 0,
+        installUnitPrice: 0,
+        installActualUnitPrice: 0,
+        qtyPerRoom: p.qtyPerRoom,
+        catalogItemId: p.catalogItemId,
+      }));
+      setOseItems((prev) => [...prev, ...newItems]);
+    } catch (err) {
+      setOsePresetError(`기본세트를 불러오지 못했어요: ${err.message}`);
+    } finally {
+      setLoadingOsePreset(false);
+    }
   }
 
   const won = (n) => `${Math.round(n).toLocaleString("ko-KR")}원`;
@@ -2744,6 +2770,14 @@ export default function App() {
             </div>
             <div className="flex items-center gap-1.5">
               <button
+                onClick={loadCatalogPresetForOse}
+                disabled={loadingOsePreset}
+                title="Supabase 전사 표준 템플릿 중 룸타입에 무관한 공통(room 기준) 품목을 불러옴 — 침구/베개 등 룸타입별 품목은 각 룸타입 카드에서 불러오세요"
+                className="text-xs border border-amber-300 text-amber-700 rounded-lg px-2.5 py-1 hover:bg-amber-50 disabled:opacity-50"
+              >
+                {loadingOsePreset ? "불러오는 중..." : "카탈로그 기본세트 불러오기"}
+              </button>
+              <button
                 onClick={() => openPicker("OSE")}
                 className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
               >
@@ -2763,6 +2797,9 @@ export default function App() {
               </button>
             </div>
           </div>
+          {osePresetError && (
+            <p className="text-xs text-red-600 mb-2">{osePresetError}</p>
+          )}
           {pickerOpenFor === "OSE" && (
             <CatalogPickerPanel
               items={itemCatalog}
