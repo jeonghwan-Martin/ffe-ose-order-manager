@@ -1,0 +1,166 @@
+diff --git a/src/TestScheduleDashboard.jsx b/src/TestScheduleDashboard.jsx
+index e7014e4..0110be3 100644
+--- a/src/TestScheduleDashboard.jsx
++++ b/src/TestScheduleDashboard.jsx
+@@ -62,6 +62,36 @@ async function deleteMilestoneRemote(id) {
+   if (!res.ok) throw new Error("삭제 실패");
+ }
+ 
++// 프로젝트 신규 생성 시 기본 마일스톤 5단계를 채우기 위한 템플릿 조회
++async function fetchMilestoneTemplates() {
++  const res = await fetch(`${SUPABASE_URL}/rest/v1/milestone_templates?select=*&order=sort_order.asc`, {
++    headers: sbHeaders,
++  });
++  if (!res.ok) throw new Error("마일스톤 템플릿 조회 실패");
++  return res.json();
++}
++
++async function createProjectRemote(name) {
++  const res = await fetch(`${SUPABASE_URL}/rest/v1/projects`, {
++    method: "POST",
++    headers: { ...sbHeaders, Prefer: "return=representation" },
++    body: JSON.stringify([{ name }]),
++  });
++  if (!res.ok) throw new Error("프로젝트 생성 실패");
++  const rows = await res.json();
++  return rows[0];
++}
++
++// 프로젝트 삭제 — room_types/order_items/project_expenses/project_milestones가 전부
++// FK CASCADE로 함께 삭제됨(Free 플랜, 백업/PITR 없음 — 되돌릴 수 없으니 호출부에서 반드시 이중 확인할 것)
++async function deleteProjectRemote(id) {
++  const res = await fetch(`${SUPABASE_URL}/rest/v1/projects?id=eq.${id}`, {
++    method: "DELETE",
++    headers: sbHeaders,
++  });
++  if (!res.ok) throw new Error("프로젝트 삭제 실패");
++}
++
+ function toDateStr(d) {
+   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+     d.getDate()
+@@ -158,7 +188,7 @@ function projectProgress(pMilestones, today) {
+   return totalWeight ? Math.round(sum / totalWeight) : 0;
+ }
+ 
+-export default function ScheduleDashboard() {
++export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
+   const [projects, setProjects] = useState([]);
+   const [milestones, setMilestones] = useState([]);
+   const [loading, setLoading] = useState(true);
+@@ -237,6 +267,69 @@ export default function ScheduleDashboard() {
+     });
+   }
+ 
++  const [projectActionBusy, setProjectActionBusy] = useState(false); // 생성/삭제 진행 중 버튼 비활성화용
++
++  // "+ 새 프로젝트" — Supabase에 프로젝트 행을 만들고 기본 마일스톤 5단계(milestone_templates)를 자동으로 채운다.
++  async function handleCreateProject() {
++    const name = window.prompt("새 프로젝트 이름을 입력하세요");
++    if (!name || !name.trim()) return;
++    setProjectActionBusy(true);
++    try {
++      const project = await createProjectRemote(name.trim());
++      setProjects((prev) => [...prev, project]);
++      try {
++        const templates = await fetchMilestoneTemplates();
++        const created = await Promise.all(
++          templates.map((t) =>
++            createMilestone({
++              project_id: project.id,
++              template_id: t.id,
++              name: t.name,
++              sort_order: t.sort_order,
++              weight: t.weight,
++            })
++          )
++        );
++        setMilestones((prev) => [...prev, ...created]);
++      } catch (tplErr) {
++        alert(
++          "프로젝트는 생성됐지만 기본 마일스톤 5단계를 자동으로 채우지 못했어요. '+ 직접입력'으로 추가해주세요."
++        );
++      }
++    } catch (err) {
++      alert("프로젝트 생성에 실패했어요: " + err.message);
++    } finally {
++      setProjectActionBusy(false);
++    }
++  }
++
++  // 프로젝트 삭제 — 발주품목/룸타입/지출까지 전부 영구 삭제되므로 이름을 그대로 입력해야만 진행되는
++  // 이중 확인을 둔다(Free 플랜은 백업이 없어 되돌릴 수 없음, 과거 실수로 데이터 소실된 전례가 있음)
++  function handleDeleteProject(project) {
++    if (
++      !window.confirm(
++        `"${project.name}" 프로젝트를 삭제할까요?\n\n연결된 발주 품목·룸타입·지출·마일스톤이 전부 영구 삭제되며 되돌릴 수 없습니다(백업 없음).`
++      )
++    )
++      return;
++    const typed = window.prompt(
++      `정말 삭제하려면 프로젝트명을 정확히 입력하세요: "${project.name}"`
++    );
++    if (typed !== project.name) {
++      if (typed !== null) alert("입력한 이름이 일치하지 않아 취소했어요.");
++      return;
++    }
++    const prevProjects = projects;
++    const prevMilestones = milestones;
++    setProjects((prev) => prev.filter((p) => p.id !== project.id));
++    setMilestones((prev) => prev.filter((m) => m.project_id !== project.id));
++    deleteProjectRemote(project.id).catch((err) => {
++      setProjects(prevProjects);
++      setMilestones(prevMilestones);
++      alert("삭제에 실패했어요: " + err.message);
++    });
++  }
++
+   // 프로젝트 행을 드래그해서 목록 순서를 수동으로 바꿈 — 처음 드래그하는 순간부터
+   // 그 시점의 전체 순서를 manual_sort_order로 고정하고, 이후엔 자동(일정순) 정렬 대신 이 값을 우선함
+   function handleDropReorder(targetProjectId) {
+@@ -648,6 +741,14 @@ export default function ScheduleDashboard() {
+             </p>
+           </div>
+           <div className="flex items-center gap-3">
++            <button
++              onClick={handleCreateProject}
++              disabled={projectActionBusy}
++              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
++              title="새 프로젝트를 만들고 기본 마일스톤 5단계를 자동으로 채웁니다"
++            >
++              + 새 프로젝트
++            </button>
+             <button
+               onClick={refresh}
+               disabled={refreshing}
+@@ -874,6 +975,30 @@ export default function ScheduleDashboard() {
+                             >
+                               ✎
+                             </button>
++                            {onOpenInOrderManager && (
++                              <button
++                                type="button"
++                                onClick={(evt) => {
++                                  evt.stopPropagation();
++                                  onOpenInOrderManager(p);
++                                }}
++                                title="발주 관리 탭에서 열기"
++                                className="text-slate-300 hover:text-amber-600 opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0"
++                              >
++                                ↗
++                              </button>
++                            )}
++                            <button
++                              type="button"
++                              onClick={(evt) => {
++                                evt.stopPropagation();
++                                handleDeleteProject(p);
++                              }}
++                              title="프로젝트 삭제"
++                              className="text-slate-300 hover:text-rose-600 opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0"
++                            >
++                              🗑
++                            </button>
+                             {managersOf(pMilestones) && (
+                               <span className="text-indigo-500 font-normal ml-1 truncate">
+                                 · {managersOf(pMilestones)}
