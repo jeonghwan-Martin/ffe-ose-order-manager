@@ -158,7 +158,7 @@ function projectProgress(pMilestones, today) {
   return totalWeight ? Math.round(sum / totalWeight) : 0;
 }
 
-export default function ScheduleDashboard() {
+export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   const [projects, setProjects] = useState([]);
   const [milestones, setMilestones] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -874,6 +874,19 @@ export default function ScheduleDashboard() {
                             >
                               ✎
                             </button>
+                            {onOpenInOrderManager && (
+                              <button
+                                type="button"
+                                onClick={(evt) => {
+                                  evt.stopPropagation();
+                                  onOpenInOrderManager(p);
+                                }}
+                                title="발주 관리 탭에서 열기"
+                                className="text-slate-300 hover:text-amber-600 opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0"
+                              >
+                                ↗
+                              </button>
+                            )}
                             {managersOf(pMilestones) && (
                               <span className="text-indigo-500 font-normal ml-1 truncate">
                                 · {managersOf(pMilestones)}

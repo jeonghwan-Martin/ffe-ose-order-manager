@@ -856,6 +856,32 @@ export default function App() {
     setLoadNotice("");
   }
 
+  // 테스트 공정표 탭에서 프로젝트명을 클릭해 발주 관리 탭으로 바로 넘어올 때 사용.
+  // supaProject: Supabase projects 테이블의 행({ id: uuid, client_id, name, ... })
+  async function handleOpenInOrderManager(supaProject) {
+    if (!supaProject) return;
+    let localId = supaProject.client_id;
+    let list = projectList;
+    if (localId) {
+      // client_id는 있는데 로컬 프로젝트 목록에 없는 경우(드물게 인덱스가 어긋난 경우) 목록에 채워 넣는다.
+      if (!list.some((p) => p.id === localId)) {
+        list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
+        setProjectList(list);
+        await saveProjectIndex(list);
+      }
+    } else {
+      // 아직 발주 관리 탭에서 한 번도 열어본 적 없는 프로젝트(전사시트로만 시딩됨) — 새 로컬 id를 만들어
+      // 목록에 추가하면, switchToProject 내부의 resolveProjectUuid가 이름 매칭으로 이 Supabase 행을 찾아
+      // client_id를 자동으로 채워준다.
+      localId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
+      setProjectList(list);
+      await saveProjectIndex(list);
+    }
+    setActiveTab("main");
+    await switchToProject(localId);
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -1498,7 +1524,9 @@ export default function App() {
           ))}
         </div>
 
-        {activeTab === "test-schedule" && <TestScheduleDashboard />}
+        {activeTab === "test-schedule" && (
+          <TestScheduleDashboard onOpenInOrderManager={handleOpenInOrderManager} />
+        )}
 
         {activeTab === "main" && (
           <>

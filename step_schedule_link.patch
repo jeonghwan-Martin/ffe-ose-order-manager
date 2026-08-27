@@ -1,0 +1,81 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index d1e15e0..d958df9 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -856,6 +856,32 @@ export default function App() {
+     setLoadNotice("");
+   }
+ 
++  // 테스트 공정표 탭에서 프로젝트명을 클릭해 발주 관리 탭으로 바로 넘어올 때 사용.
++  // supaProject: Supabase projects 테이블의 행({ id: uuid, client_id, name, ... })
++  async function handleOpenInOrderManager(supaProject) {
++    if (!supaProject) return;
++    let localId = supaProject.client_id;
++    let list = projectList;
++    if (localId) {
++      // client_id는 있는데 로컬 프로젝트 목록에 없는 경우(드물게 인덱스가 어긋난 경우) 목록에 채워 넣는다.
++      if (!list.some((p) => p.id === localId)) {
++        list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
++        setProjectList(list);
++        await saveProjectIndex(list);
++      }
++    } else {
++      // 아직 발주 관리 탭에서 한 번도 열어본 적 없는 프로젝트(전사시트로만 시딩됨) — 새 로컬 id를 만들어
++      // 목록에 추가하면, switchToProject 내부의 resolveProjectUuid가 이름 매칭으로 이 Supabase 행을 찾아
++      // client_id를 자동으로 채워준다.
++      localId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
++      list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
++      setProjectList(list);
++      await saveProjectIndex(list);
++    }
++    setActiveTab("main");
++    await switchToProject(localId);
++  }
++
+   useEffect(() => {
+     (async () => {
+       try {
+@@ -1498,7 +1524,9 @@ export default function App() {
+           ))}
+         </div>
+ 
+-        {activeTab === "test-schedule" && <TestScheduleDashboard />}
++        {activeTab === "test-schedule" && (
++          <TestScheduleDashboard onOpenInOrderManager={handleOpenInOrderManager} />
++        )}
+ 
+         {activeTab === "main" && (
+           <>
+diff --git a/src/TestScheduleDashboard.jsx b/src/TestScheduleDashboard.jsx
+index e7014e4..134a945 100644
+--- a/src/TestScheduleDashboard.jsx
++++ b/src/TestScheduleDashboard.jsx
+@@ -158,7 +158,7 @@ function projectProgress(pMilestones, today) {
+   return totalWeight ? Math.round(sum / totalWeight) : 0;
+ }
+ 
+-export default function ScheduleDashboard() {
++export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
+   const [projects, setProjects] = useState([]);
+   const [milestones, setMilestones] = useState([]);
+   const [loading, setLoading] = useState(true);
+@@ -874,6 +874,19 @@ export default function ScheduleDashboard() {
+                             >
+                               ✎
+                             </button>
++                            {onOpenInOrderManager && (
++                              <button
++                                type="button"
++                                onClick={(evt) => {
++                                  evt.stopPropagation();
++                                  onOpenInOrderManager(p);
++                                }}
++                                title="발주 관리 탭에서 열기"
++                                className="text-slate-300 hover:text-amber-600 opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0"
++                              >
++                                ↗
++                              </button>
++                            )}
+                             {managersOf(pMilestones) && (
+                               <span className="text-indigo-500 font-normal ml-1 truncate">
+                                 · {managersOf(pMilestones)}
