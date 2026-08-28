@@ -2488,7 +2488,7 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2 text-slate-500">
                 <LayoutGrid size={18} />
-                <span className="text-sm font-medium tracking-wide">FF&E 발주 품목 (룸타입별)</span>
+                <span className="text-sm font-medium tracking-wide" title="이 카드 이름은 계산 방식(룸타입별)을 뜻할 뿐, 실제 FF&E/OS&E 구분은 각 품목의 '구분' 칸을 따름">룸타입별 품목</span>
               </div>
               <button
                 onClick={() => setPresetEditorOpen((v) => !v)}
@@ -2816,7 +2816,7 @@ export default function App() {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2 text-slate-500">
               <LayoutGrid size={18} />
-              <span className="text-sm font-medium tracking-wide">OS&E 발주 품목 (공통, 전체 {grandTotal}실 기준)</span>
+              <span className="text-sm font-medium tracking-wide" title="이 카드 이름은 계산 방식(룸타입 무관 공통)을 뜻할 뿐, 실제 FF&E/OS&E 구분은 각 품목의 '구분' 칸을 따름">공통 품목 (전체 {grandTotal}실 기준)</span>
             </div>
             <div className="flex items-center gap-1.5">
               <button
@@ -3333,7 +3333,7 @@ export default function App() {
                 {/* 룸타입별 FF&E 예산 vs 집행 */}
                 {ffeByRoomType.length > 0 && (
                   <div className="mb-6">
-                    <p className="text-xs text-slate-500 mb-2">룸타입별 FF&E 예산 대비 집행</p>
+                    <p className="text-xs text-slate-500 mb-2" title="FF&E/OS&E 구분 없이 룸타입 카드 전체 합계">룸타입별 품목 예산 대비 집행</p>
                     <div style={{ width: "100%", height: 240 }}>
                       <ResponsiveContainer>
                         <BarChart data={ffeByRoomType} layout="vertical" margin={{ left: 20 }}>
