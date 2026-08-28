@@ -737,7 +737,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               오픈바이징 공정표
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              프로젝트 {projects.length}개 · 오늘 {fmt(today)} · 테스트 배포
+              프로젝트 {projects.length}개 · 오늘 {fmt(today)}
             </p>
           </div>
           <div className="flex items-center gap-3">
