@@ -1,12 +1,12 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard } from "lucide-react";
+import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard, ChevronDown, ChevronRight } from "lucide-react";
 import {
   Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 
-import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex, getCatalog, saveCatalog } from "./api";
+import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex } from "./api";
 import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
 import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
 import { saveExpenses, loadExpenses } from "./expensesApi";
@@ -41,66 +41,6 @@ const DEFAULT_BASIC_PRESET = [
 
 let idCounter = 1;
 const nextId = () => idCounter++;
-
-function CatalogPickerPanel({ items, selected, onToggle, onConfirm, onCancel, categoryFilter, setCategoryFilter }) {
-  if (items.length === 0) {
-    return (
-      <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-400">
-        카탈로그가 비어있어요. 위쪽 "품목 마스터 카탈로그 업로드"에서 엑셀을 먼저 올려주세요.
-        <div className="mt-2 text-right">
-          <button onClick={onCancel} className="text-xs border border-slate-300 rounded-md px-3 py-1 hover:bg-white">
-            닫기
-          </button>
-        </div>
-      </div>
-    );
-  }
-  const categories = ["전체", ...Array.from(new Set(items.map((it) => it.category)))];
-  const filtered = categoryFilter === "전체" ? items : items.filter((it) => it.category === categoryFilter);
-  return (
-    <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-3">
-      <div className="flex items-center justify-between mb-2">
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="text-xs border border-slate-300 rounded-lg px-2 py-1"
-        >
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-        <span className="text-[11px] text-slate-500">{selected.size}개 선택됨</span>
-      </div>
-      <div className="max-h-48 overflow-y-auto grid grid-cols-2 gap-1 mb-2">
-        {filtered.map((it) => (
-          <label
-            key={it.id}
-            className="flex items-center gap-1.5 text-xs px-2 py-1 rounded hover:bg-white cursor-pointer"
-          >
-            <input type="checkbox" checked={selected.has(it.id)} onChange={() => onToggle(it.id)} />
-            <span className="truncate">{it.name}</span>
-            <span className="text-slate-400 ml-auto whitespace-nowrap">
-              {it.unitPrice.toLocaleString("ko-KR")}원
-            </span>
-          </label>
-        ))}
-      </div>
-      <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="text-xs border border-slate-300 rounded-md px-3 py-1 hover:bg-white">
-          취소
-        </button>
-        <button
-          onClick={onConfirm}
-          className="text-xs bg-amber-700 text-white px-3 py-1 rounded-md hover:bg-amber-800"
-        >
-          선택 항목 추가
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function ExpenseSection({ title, items, onAdd, onUpdate, onRemove }) {
   const budgetTotal = items.reduce((s, it) => s + (it.budgetAmount || 0), 0);
@@ -179,6 +119,124 @@ function ExpenseSection({ title, items, onAdd, onUpdate, onRemove }) {
   );
 }
 
+// 인건비 지출 전용 — 현장 알바처럼 인원수가 유동적인(3~20명 등) 항목을 단가×인원수로 관리.
+// 예산/집행 각각 단가·인원수를 따로 둬서(집행 시점에 실제 투입 인원이 달라질 수 있으므로) 금액은 자동 계산됨.
+function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }) {
+  const budgetTotal = items.reduce((s, it) => s + (it.budgetAmount || 0), 0);
+  const actualTotal = items.reduce((s, it) => s + (it.actualAmount || 0), 0);
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm font-medium tracking-wide text-slate-500">인건비 지출</span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onAddDefaults}
+            className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
+            title="현장 운용 인원(알바)/사진 작가/모델 3개 항목을 기본값(인원 1명)으로 추가"
+          >
+            기본 인원 추가
+          </button>
+          <button
+            onClick={onAdd}
+            className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 flex items-center gap-1"
+          >
+            <Plus size={13} /> 항목 추가
+          </button>
+        </div>
+      </div>
+      {items.length > 0 ? (
+        <>
+          <div className="max-h-96 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white z-10">
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                  <th className="py-1.5 font-normal">항목명</th>
+                  <th className="py-1.5 font-normal text-right">예산단가</th>
+                  <th className="py-1.5 font-normal text-right">인원수(예산)</th>
+                  <th className="py-1.5 font-normal text-right">집행단가</th>
+                  <th className="py-1.5 font-normal text-right">인원수(집행)</th>
+                  <th className="py-1.5 font-normal text-right">예산금액</th>
+                  <th className="py-1.5 font-normal text-right">집행금액</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it) => (
+                  <tr key={it.id} className="border-b border-slate-100">
+                    <td className="py-1.5">
+                      <input
+                        value={it.name}
+                        onChange={(e) => onUpdate(it.id, "name", e.target.value)}
+                        placeholder="예: 현장 운용 인원(알바)"
+                        className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.unitPrice || 0}
+                        onChange={(e) => onUpdate(it.id, "unitPrice", e.target.value)}
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.quantity != null ? it.quantity : 1}
+                        onChange={(e) => onUpdate(it.id, "quantity", e.target.value)}
+                        title="예: 현장 알바는 3~20명까지 조정 가능"
+                        className="w-16 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.actualUnitPrice || 0}
+                        onChange={(e) => onUpdate(it.id, "actualUnitPrice", e.target.value)}
+                        className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={it.actualQuantity != null ? it.actualQuantity : 1}
+                        onChange={(e) => onUpdate(it.id, "actualQuantity", e.target.value)}
+                        className="w-16 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                      />
+                    </td>
+                    <td className="py-1.5 text-right font-medium">
+                      {(it.budgetAmount || 0).toLocaleString("ko-KR")}원
+                    </td>
+                    <td className="py-1.5 text-right font-medium text-teal-700">
+                      {(it.actualAmount || 0).toLocaleString("ko-KR")}원
+                    </td>
+                    <td className="py-1.5 pl-2">
+                      <button onClick={() => onRemove(it.id)} className="text-slate-400 hover:text-rose-600">
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-right text-xs text-slate-500 mt-2">
+            소계 — 예산 <span className="font-semibold text-slate-800">{budgetTotal.toLocaleString("ko-KR")}원</span>
+            {" / "}집행 <span className="font-semibold text-teal-700">{actualTotal.toLocaleString("ko-KR")}원</span>
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-slate-400">항목을 추가하면 단가×인원수로 예산/집행 금액이 자동 계산돼요.</p>
+      )}
+    </div>
+  );
+}
+
+
 export default function App() {
   const [projectName, setProjectName] = useState("");
   const [tier, setTier] = useState(TIERS[2]);
@@ -238,10 +296,20 @@ export default function App() {
   // 발주 품목: FF&E는 룸타입별, OS&E는 공통 리스트 (각 항목은 예산단가 unitPrice + 집행단가 actualUnitPrice)
   const [ffeItems, setFfeItems] = useState({}); // { [roomTypeId]: [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}] }
   const [oseItems, setOseItems] = useState([]); // [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}]
+  // 룸타입별 품목 카드 접기/펼치기 — 품목이 많아지면 스크롤이 매우 길어져서 필요한 카드만 펴놓고 볼 수 있게
+  const [collapsedRoomTypeIds, setCollapsedRoomTypeIds] = useState(new Set());
+  function toggleRoomTypeCollapsed(roomTypeId) {
+    setCollapsedRoomTypeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(roomTypeId)) next.delete(roomTypeId);
+      else next.add(roomTypeId);
+      return next;
+    });
+  }
 
-  // 현장지출 / 인건비 지출 / 예산외 지출 (품목형이 아닌 금액 직접 입력 방식, 예산금액/집행금액)
+  // 현장지출 / 인건비 지출 / 예산외 지출 (현장지출·예산외지출은 직접입력, 인건비지출만 단가×인원수 자동계산)
   const [siteExpenses, setSiteExpenses] = useState([]); // [{id,name,budgetAmount,actualAmount}]
-  const [laborExpenses, setLaborExpenses] = useState([]);
+  const [laborExpenses, setLaborExpenses] = useState([]); // [{id,name,unitPrice,actualUnitPrice,quantity,actualQuantity,budgetAmount,actualAmount}]
   const [extraExpenses, setExtraExpenses] = useState([]);
 
   function makeExpenseHandlers(setList) {
@@ -258,8 +326,43 @@ export default function App() {
     const remove = (id) => setList((prev) => prev.filter((it) => it.id !== id));
     return { add, update, remove };
   }
+  const DEFAULT_LABOR_ROLES = ["현장 운용 인원(알바)", "사진 작가", "모델"];
+  // 인건비 지출 전용 핸들러 — budgetAmount/actualAmount를 단가×인원수로 항상 재계산해서 저장
+  // (다른 집계 로직(laborBudget 등)은 그대로 budgetAmount/actualAmount만 읽으므로 이 계산만 맞으면 나머지는 자동으로 맞음)
+  function recalcLaborItem(it) {
+    return {
+      ...it,
+      budgetAmount: (it.unitPrice || 0) * (it.quantity != null ? it.quantity : 1),
+      actualAmount: (it.actualUnitPrice || 0) * (it.actualQuantity != null ? it.actualQuantity : 1),
+    };
+  }
+  function addLaborExpense() {
+    setLaborExpenses((prev) => [
+      ...prev,
+      recalcLaborItem({ id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, quantity: 1, actualQuantity: 1 }),
+    ]);
+  }
+  function addDefaultLaborRoles() {
+    setLaborExpenses((prev) => [
+      ...prev,
+      ...DEFAULT_LABOR_ROLES.map((name) =>
+        recalcLaborItem({ id: nextId(), name, unitPrice: 0, actualUnitPrice: 0, quantity: 1, actualQuantity: 1 })
+      ),
+    ]);
+  }
+  function updateLaborExpense(id, field, value) {
+    setLaborExpenses((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        const updated = { ...it, [field]: field === "name" ? value : Math.max(0, parseFloat(value || "0") || 0) };
+        return recalcLaborItem(updated);
+      })
+    );
+  }
+  function removeLaborExpense(id) {
+    setLaborExpenses((prev) => prev.filter((it) => it.id !== id));
+  }
   const siteExpenseHandlers = makeExpenseHandlers(setSiteExpenses);
-  const laborExpenseHandlers = makeExpenseHandlers(setLaborExpenses);
   const extraExpenseHandlers = makeExpenseHandlers(setExtraExpenses);
   const [pasteOpenFor, setPasteOpenFor] = useState(null); // roomTypeId | "OSE" | null
   const [pasteText, setPasteText] = useState("");
@@ -713,13 +816,7 @@ export default function App() {
   const [importError, setImportError] = useState("");
   const [overwriteOnImport, setOverwriteOnImport] = useState(true);
 
-  // ---- 품목 마스터 카탈로그 (엑셀 업로드 후 골라서 삽입) ----
-  const [itemCatalog, setItemCatalog] = useState([]); // [{id,name,unitPrice,category}]
-  const [catalogSummary, setCatalogSummary] = useState(null);
-  const [catalogError, setCatalogError] = useState("");
-  const [pickerOpenFor, setPickerOpenFor] = useState(null); // roomTypeId | "OSE" | null
-  const [pickerSelected, setPickerSelected] = useState(new Set());
-  const [pickerCategoryFilter, setPickerCategoryFilter] = useState("전체");
+
 
   // ---- 공유 저장소(팀원과 데이터 공유) + 다중 프로젝트 ----
   const [isLoading, setIsLoading] = useState(true);
@@ -890,12 +987,6 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const catalog = await getCatalog();
-        if (catalog && catalog.length) setItemCatalog(catalog);
-      } catch (err) {
-        // 카탈로그 없음 (최초 사용) 또는 네트워크 오류 — 조용히 넘어감
-      }
-      try {
         const list = await getProjectIndex();
         if (list.length === 0) {
           const id = `proj_${Date.now()}_init`;
@@ -971,107 +1062,6 @@ export default function App() {
     } finally {
       setIsSaving(false);
     }
-  }
-
-  function togglePickerItem(id) {
-    setPickerSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
-  function openPicker(target) {
-    setPickerOpenFor(target);
-    setPickerSelected(new Set());
-    setPickerCategoryFilter("전체");
-  }
-  function confirmPickerAdd() {
-    const chosen = itemCatalog.filter((it) => pickerSelected.has(it.id));
-    if (chosen.length === 0 || !pickerOpenFor) {
-      setPickerOpenFor(null);
-      return;
-    }
-    if (pickerOpenFor === "OSE") {
-      setOseItems((prev) => [
-        ...prev,
-        ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 })),
-      ]);
-    } else {
-      setFfeItems((prev) => ({
-        ...prev,
-        [pickerOpenFor]: [
-          ...(prev[pickerOpenFor] || []),
-          ...chosen.map((it) => ({ id: nextId(), name: it.name, unitPrice: it.unitPrice, actualUnitPrice: 0, installUnitPrice: 0, installActualUnitPrice: 0, qtyPerRoom: 1 })),
-        ],
-      }));
-    }
-    setPickerOpenFor(null);
-  }
-
-  async function handleCatalogUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setCatalogError("");
-    setCatalogSummary(null);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const norm = (s) => String(s).replace(/\s+/g, "").trim();
-
-      let headerIdx = -1;
-      let colIdx = {};
-      let rows = null;
-      const scanned = [];
-
-      for (const sheetName of wb.SheetNames) {
-        const candidateRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: "" });
-        scanned.push({ sheetName, preview: candidateRows.slice(0, 3) });
-        for (let i = 0; i < Math.min(candidateRows.length, 20); i++) {
-          const normedRow = candidateRows[i].map((c) => norm(c));
-          const nameIdx = normedRow.findIndex((c) => c.includes("품목명") || c === "품목");
-          const priceIdx = normedRow.findIndex((c) => c.includes("단가"));
-          if (nameIdx === -1 || priceIdx === -1) continue;
-          const catIdx = normedRow.findIndex((c) => c.includes("카테고리") || c.includes("분류"));
-          rows = candidateRows;
-          headerIdx = i;
-          colIdx = { name: nameIdx, price: priceIdx, category: catIdx };
-          break;
-        }
-        if (headerIdx !== -1) break;
-      }
-
-      if (headerIdx === -1) {
-        const detail = scanned
-          .map((s) => `[${s.sheetName}] ` + s.preview.map((r) => r.filter(Boolean).join(" | ")).join(" / "))
-          .join("\n");
-        setCatalogError(
-          `헤더 행("품목명", "단가" 등)을 찾지 못했어요.\n\n실제로 읽은 내용:\n${detail}`
-        );
-        return;
-      }
-
-      const newItems = [];
-      for (let i = headerIdx + 1; i < rows.length; i++) {
-        const row = rows[i];
-        const name = String(row[colIdx.name] || "").trim();
-        if (!name) continue;
-        const priceRaw = row[colIdx.price];
-        const unitPrice = Math.max(0, parseFloat(String(priceRaw).replace(/[^0-9.]/g, "")) || 0);
-        const category = colIdx.category !== -1 ? String(row[colIdx.category] || "").trim() || "미분류" : "미분류";
-        newItems.push({ id: nextId(), name, unitPrice, category });
-      }
-
-      if (newItems.length === 0) {
-        setCatalogError("품목 데이터를 찾지 못했어요.");
-        return;
-      }
-      setItemCatalog(newItems);
-      saveCatalog(newItems).catch(() => {});
-      setCatalogSummary(`품목 ${newItems.length}개를 카탈로그로 불러왔어요. (전 프로젝트 공통으로 공유됩니다)`);
-    } catch (err) {
-      setCatalogError("파일을 읽는 중 문제가 발생했어요. xlsx 형식인지 확인해주세요.");
-    }
-    e.target.value = "";
   }
 
   function floorFromRoomNumber(numStr) {
@@ -1694,39 +1684,6 @@ export default function App() {
           {importError && (
             <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2 mt-3 whitespace-pre-wrap">
               {importError}
-            </p>
-          )}
-        </div>
-
-        {/* Item catalog upload */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-2 text-slate-500">
-              <Upload size={18} />
-              <span className="text-sm font-medium tracking-wide">품목 마스터 카탈로그 업로드</span>
-            </div>
-            <label className="text-sm bg-amber-700 text-white px-4 py-2 rounded-lg hover:bg-amber-800 cursor-pointer flex items-center gap-1.5">
-              <Upload size={15} />
-              엑셀 파일 선택
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleCatalogUpload} className="hidden" />
-            </label>
-          </div>
-          <p className="text-xs text-slate-400 mt-2">
-            "품목명 / 단가 / 카테고리" 열이 있는 시트를 올리면, FF&E·OS&E 등록할 때 카탈로그에서 골라서 바로 넣을 수 있어요. (이 카탈로그는 프로젝트 구분 없이 전체 공통으로 공유돼요)
-          </p>
-          {itemCatalog.length > 0 && (
-            <p className="text-xs text-slate-500 mt-2">
-              현재 카탈로그: <span className="font-medium text-slate-700">{itemCatalog.length}개 품목</span>
-            </p>
-          )}
-          {catalogSummary && (
-            <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2 mt-3">
-              {catalogSummary}
-            </p>
-          )}
-          {catalogError && (
-            <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2 mt-3 whitespace-pre-wrap">
-              {catalogError}
             </p>
           )}
         </div>
@@ -2556,13 +2513,28 @@ export default function App() {
                   <div key={rt.id}>
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleRoomTypeCollapsed(rt.id)}
+                          className="text-slate-400 hover:text-slate-700"
+                          title={collapsedRoomTypeIds.has(rt.id) ? "펼치기" : "접기"}
+                        >
+                          {collapsedRoomTypeIds.has(rt.id) ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                        </button>
                         <span className={`text-[11px] font-medium px-2 py-0.5 rounded ${c.bg} ${c.text}`}>
                           {codeFor(rt)}
                         </span>
                         <span className="text-xs text-slate-500">
                           {generateRoomName(rt)} · 객실 {roomCount}실
                         </span>
+                        {collapsedRoomTypeIds.has(rt.id) && items.length > 0 && (
+                          <span className="text-xs text-slate-400">
+                            — 예산 <span className="font-medium text-slate-600">{won(typeTotal)}</span>
+                            {" / "}집행 <span className="font-medium text-teal-700">{won(typeActualTotal)}</span>
+                            {" ("}{items.length}개 품목{")"}
+                          </span>
+                        )}
                       </div>
+                      {!collapsedRoomTypeIds.has(rt.id) && (
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           onClick={() => addPresetFfeItems(rt.id)}
@@ -2612,30 +2584,16 @@ export default function App() {
                           붙여넣기로 추가
                         </button>
                         <button
-                          onClick={() => openPicker(rt.id)}
-                          className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
-                        >
-                          카탈로그에서 선택
-                        </button>
-                        <button
                           onClick={() => addFfeItem(rt.id)}
                           className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 flex items-center gap-1"
                         >
                           <Plus size={13} /> 품목 추가
                         </button>
                       </div>
+                      )}
                     </div>
-                    {pickerOpenFor === rt.id && (
-                      <CatalogPickerPanel
-                        items={itemCatalog}
-                        selected={pickerSelected}
-                        onToggle={togglePickerItem}
-                        onConfirm={confirmPickerAdd}
-                        onCancel={() => setPickerOpenFor(null)}
-                        categoryFilter={pickerCategoryFilter}
-                        setCategoryFilter={setPickerCategoryFilter}
-                      />
-                    )}
+                    {!collapsedRoomTypeIds.has(rt.id) && (
+                    <>
                     {pasteOpenFor === rt.id && (
                       <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
                         <p className="text-[11px] text-slate-500 mb-1.5">
@@ -2804,6 +2762,8 @@ export default function App() {
                         {" / "}집행 <span className="font-semibold text-teal-700">{won(typeActualTotal)}</span>
                       </div>
                     )}
+                    </>
+                    )}
                   </div>
                 );
               })}
@@ -2828,12 +2788,6 @@ export default function App() {
                 {loadingOsePreset ? "불러오는 중..." : "카탈로그 기본세트 불러오기"}
               </button>
               <button
-                onClick={() => openPicker("OSE")}
-                className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
-              >
-                카탈로그에서 선택
-              </button>
-              <button
                 onClick={() => setPasteOpenFor(pasteOpenFor === "OSE" ? null : "OSE")}
                 className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
               >
@@ -2849,17 +2803,6 @@ export default function App() {
           </div>
           {osePresetError && (
             <p className="text-xs text-red-600 mb-2">{osePresetError}</p>
-          )}
-          {pickerOpenFor === "OSE" && (
-            <CatalogPickerPanel
-              items={itemCatalog}
-              selected={pickerSelected}
-              onToggle={togglePickerItem}
-              onConfirm={confirmPickerAdd}
-              onCancel={() => setPickerOpenFor(null)}
-              categoryFilter={pickerCategoryFilter}
-              setCategoryFilter={setPickerCategoryFilter}
-            />
           )}
           {pasteOpenFor === "OSE" && (
             <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
@@ -3008,12 +2951,12 @@ export default function App() {
           onUpdate={siteExpenseHandlers.update}
           onRemove={siteExpenseHandlers.remove}
         />
-        <ExpenseSection
-          title="인건비 지출"
+        <LaborExpenseSection
           items={laborExpenses}
-          onAdd={laborExpenseHandlers.add}
-          onUpdate={laborExpenseHandlers.update}
-          onRemove={laborExpenseHandlers.remove}
+          onAdd={addLaborExpense}
+          onAddDefaults={addDefaultLaborRoles}
+          onUpdate={updateLaborExpense}
+          onRemove={removeLaborExpense}
         />
         <ExpenseSection
           title="예산외 지출"
