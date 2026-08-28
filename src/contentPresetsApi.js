@@ -19,7 +19,7 @@ const sbHeaders = {
 export async function fetchContentPresets(category) {
   // PostgREST or= 조건 조합이 복잡해지므로 공통베이스/전용콘텐츠를 두 번 나눠 조회 후 합친다
   const commonRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size)`,
     { headers: sbHeaders }
   );
   if (!commonRes.ok) throw new Error(`content_presets(공통) 조회 실패 (${commonRes.status})`);
@@ -28,7 +28,7 @@ export async function fetchContentPresets(category) {
   let categoryRows = [];
   if (category) {
     const catRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
+      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size)`,
       { headers: sbHeaders }
     );
     if (!catRes.ok) throw new Error(`content_presets(전용) 조회 실패 (${catRes.status})`);
@@ -48,6 +48,7 @@ export async function fetchContentPresets(category) {
       mattressSize: row.mattress_size ?? null,
       categoryGroup: ci.accounting_group ?? null,
       subCategory: ci.category_group ?? null,
+      cartonSize: ci.carton_size != null ? Number(ci.carton_size) : null,
     };
   });
 }
@@ -60,7 +61,7 @@ export async function fetchContentPresets(category) {
 // OS&E 카드 화면엔 별도 multiplier 컬럼이 없으므로 default_qty×default_multiplier를 미리 곱해 qtyPerRoom 하나로 반환.
 export async function fetchOseContentPresets() {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size)`,
     { headers: sbHeaders }
   );
   if (!res.ok) throw new Error(`content_presets(OS&E) 조회 실패 (${res.status})`);
@@ -77,6 +78,7 @@ export async function fetchOseContentPresets() {
         qtyPerRoom: (Number(row.default_qty) || 0) * mult,
         categoryGroup: ci.accounting_group ?? null,
         subCategory: ci.category_group ?? null,
+        cartonSize: ci.carton_size != null ? Number(ci.carton_size) : null,
       };
     });
 }

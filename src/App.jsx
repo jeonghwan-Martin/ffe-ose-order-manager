@@ -504,6 +504,7 @@ export default function App() {
         catalogItemId: p.catalogItemId,
         categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, 이 카드(룸타입별) 위치와 무관
         subCategory: p.subCategory, // 세부 품목군(객실비품/린넨류/타올류/매트리스/기기류)
+        cartonSize: p.cartonSize, // 박스/팩당 개수(카탈로그 값) — 있으면 필요수량을 이 배수로 올림해서 발주수량 산출
       }));
       setFfeItems((prev) => ({
         ...prev,
@@ -586,6 +587,7 @@ export default function App() {
         catalogItemId: p.catalogItemId,
         categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, "OS&E 공통 품목" 카드 위치와 무관
         subCategory: p.subCategory,
+        cartonSize: p.cartonSize,
       }));
       setOseItems((prev) => [...prev, ...newItems]);
     } catch (err) {
@@ -839,21 +841,32 @@ export default function App() {
 
   // FF&E 품목의 실제 발주수량 계산 — calcBasis(room/capacity/bed)에 따라 분기
   // calcBasis 없는 레거시 품목은 room 기준(qtyPerRoom×roomCount)으로 그대로 동작(하위호환)
+  // 카톤/팩 단위로만 살 수 있는 소모품용 올림 처리 — cartonSize가 없으면(낱개 구매 가능) 그대로 반환
+  function roundToCarton(qty, cartonSize) {
+    if (!cartonSize || cartonSize <= 0) return qty;
+    return Math.ceil(qty / cartonSize) * cartonSize;
+  }
   function ffeItemQty(it, rt) {
     const roomCount = roomTypeTotal(rt);
     const mult = it.multiplier != null && it.multiplier !== "" ? Number(it.multiplier) : 1;
     const base = Number(it.qtyPerRoom) || 0;
+    let raw;
     if (it.calcBasis === "capacity") {
-      return base * mult * (rt.capacity || 1) * roomCount;
-    }
-    if (it.calcBasis === "bed") {
+      raw = base * mult * (rt.capacity || 1) * roomCount;
+    } else if (it.calcBasis === "bed") {
       const beds = effectiveBedComposition(rt);
       const bedQty = it.mattressSize
         ? beds.filter((b) => b.size === it.mattressSize).reduce((s, b) => s + (b.qty || 0), 0)
         : beds.reduce((s, b) => s + (b.qty || 0), 0);
-      return base * mult * bedQty * roomCount;
+      raw = base * mult * bedQty * roomCount;
+    } else {
+      raw = base * mult * roomCount;
     }
-    return base * mult * roomCount;
+    return roundToCarton(raw, it.cartonSize);
+  }
+  // OS&E 공통 리스트 품목의 필요수량 — 프로젝트 전체 객실수(grandTotal) 비례, 카톤 단위 올림 동일 적용
+  function oseItemQty(it) {
+    return roundToCarton(it.qtyPerRoom * grandTotal, it.cartonSize);
   }
 
   // ---- 엑셀 업로드로 룸타입 + 호수 일괄 생성 ----
@@ -2793,6 +2806,9 @@ export default function App() {
                               </td>
                               <td className="py-1.5 text-right text-slate-500">
                                 {ffeItemQty(it, rt).toLocaleString("ko-KR")}
+                                {it.cartonSize ? (
+                                  <span className="text-[10px] text-amber-600 block">카톤×{it.cartonSize}</span>
+                                ) : null}
                               </td>
                               <td className="py-1.5 text-right font-medium">
                                 {won((it.unitPrice + (it.installUnitPrice || 0)) * ffeItemQty(it, rt))}
@@ -2978,13 +2994,16 @@ export default function App() {
                       />
                     </td>
                     <td className="py-1.5 text-right text-slate-500">
-                      {(it.qtyPerRoom * grandTotal).toLocaleString("ko-KR")}
+                      {oseItemQty(it).toLocaleString("ko-KR")}
+                      {it.cartonSize ? (
+                        <span className="text-[10px] text-amber-600 block">카톤×{it.cartonSize}</span>
+                      ) : null}
                     </td>
                     <td className="py-1.5 text-right font-medium">
-                      {won((it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal)}
+                      {won((it.unitPrice + (it.installUnitPrice || 0)) * oseItemQty(it))}
                     </td>
                     <td className="py-1.5 text-right font-medium text-teal-700">
-                      {won(((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * grandTotal)}
+                      {won(((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * oseItemQty(it))}
                     </td>
                     <td className="py-1.5 pl-2">
                       <button onClick={() => removeOseItem(it.id)} className="text-slate-400 hover:text-rose-600">
@@ -3044,7 +3063,7 @@ export default function App() {
                     });
                   });
                   oseItems.forEach((it) => {
-                    const amt = (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
+                    const amt = (it.unitPrice + (it.installUnitPrice || 0)) * oseItemQty(it);
                     if (it.categoryGroup === "FF&E") ffeTotal += amt;
                     else if (it.categoryGroup === "OS&E") oseTotal += amt;
                     else unclassifiedTotal += amt;
@@ -3106,7 +3125,7 @@ export default function App() {
               unclassifiedActual += sumActual(unclassified, qtyFn);
             });
             {
-              const qtyFn = (it) => it.qtyPerRoom * grandTotal;
+              const qtyFn = (it) => oseItemQty(it);
               ffeBudget += sumBudgetByGroup(oseItems, qtyFn, "FF&E");
               ffeActual += sumActualByGroup(oseItems, qtyFn, "FF&E");
               oseBudget += sumBudgetByGroup(oseItems, qtyFn, "OS&E");
@@ -3169,8 +3188,8 @@ export default function App() {
             oseItems.forEach((it) => {
               if (!it.name) return;
               const cur = itemAgg.get(it.name) || { name: it.name, budget: 0, actual: 0 };
-              cur.budget += (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
-              cur.actual += ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
+              cur.budget += (it.unitPrice + (it.installUnitPrice || 0)) * oseItemQty(it);
+              cur.actual += ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * oseItemQty(it);
               itemAgg.set(it.name, cur);
             });
             const itemAggRows = [...itemAgg.values()].sort((a, b) => b.budget - a.budget);
