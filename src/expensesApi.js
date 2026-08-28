@@ -1,6 +1,8 @@
 // 현장지출/인건비지출/예산외지출 — Supabase project_expenses 테이블 데이터 레이어
-// 세 지출 종류는 App.jsx에서 동일한 형태({id,name,budgetAmount,actualAmount})라
-// 테이블 하나 + expense_type 컬럼으로 구분한다.
+// 현장지출/예산외지출은 {id,name,budgetAmount,actualAmount} 직접입력 방식.
+// 인건비지출은 인원수가 유동적인 항목(알바 등)이 있어 {..., unitPrice,actualUnitPrice,quantity,actualQuantity}도
+// 함께 저장 — budgetAmount/actualAmount는 App.jsx에서 단가×인원수로 미리 계산해 채워 넣은 값(하위호환 유지).
+// 세 지출 종류는 expense_type 컬럼으로 한 테이블에서 구분한다.
 // room_types와 동일하게 client_id로 App.jsx 로컬 nextId()와 Supabase UUID를 매칭한다.
 const SUPABASE_URL = "https://fsjyzehxovazlmuihxxd.supabase.co";
 const SUPABASE_ANON_KEY =
@@ -27,6 +29,12 @@ function toRow(it, projectId, expenseType) {
     name: it.name || "",
     budget_amount: it.budgetAmount || 0,
     actual_amount: it.actualAmount || 0,
+    unit_price: it.unitPrice != null ? it.unitPrice : null,
+    actual_unit_price: it.actualUnitPrice != null ? it.actualUnitPrice : null,
+    quantity: it.quantity != null ? it.quantity : null,
+    actual_quantity: it.actualQuantity != null ? it.actualQuantity : null,
+    days: it.days != null ? it.days : null,
+    actual_days: it.actualDays != null ? it.actualDays : null,
   };
 }
 
@@ -80,6 +88,12 @@ export async function loadExpenses(projectId) {
       name: row.name || "",
       budgetAmount: Number(row.budget_amount) || 0,
       actualAmount: Number(row.actual_amount) || 0,
+      ...(row.unit_price != null ? { unitPrice: Number(row.unit_price) } : {}),
+      ...(row.actual_unit_price != null ? { actualUnitPrice: Number(row.actual_unit_price) } : {}),
+      ...(row.quantity != null ? { quantity: Number(row.quantity) } : {}),
+      ...(row.actual_quantity != null ? { actualQuantity: Number(row.actual_quantity) } : {}),
+      ...(row.days != null ? { days: Number(row.days) } : {}),
+      ...(row.actual_days != null ? { actualDays: Number(row.actual_days) } : {}),
     });
   });
   return result;

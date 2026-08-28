@@ -153,8 +153,10 @@ function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }
                   <th className="py-1.5 font-normal">항목명</th>
                   <th className="py-1.5 font-normal text-right">예산단가</th>
                   <th className="py-1.5 font-normal text-right">인원수(예산)</th>
+                  <th className="py-1.5 font-normal text-right" title="며칠 운용하는지(예: 알바 2~3일)">운용일수(예산)</th>
                   <th className="py-1.5 font-normal text-right">집행단가</th>
                   <th className="py-1.5 font-normal text-right">인원수(집행)</th>
+                  <th className="py-1.5 font-normal text-right">운용일수(집행)</th>
                   <th className="py-1.5 font-normal text-right">예산금액</th>
                   <th className="py-1.5 font-normal text-right">집행금액</th>
                   <th></th>
@@ -194,6 +196,17 @@ function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }
                       <input
                         type="number"
                         min="0"
+                        step="0.5"
+                        value={it.days != null ? it.days : 1}
+                        onChange={(e) => onUpdate(it.id, "days", e.target.value)}
+                        title="예: 2~3일씩 고용하는 경우"
+                        className="w-14 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
                         value={it.actualUnitPrice || 0}
                         onChange={(e) => onUpdate(it.id, "actualUnitPrice", e.target.value)}
                         className="w-24 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
@@ -206,6 +219,16 @@ function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }
                         value={it.actualQuantity != null ? it.actualQuantity : 1}
                         onChange={(e) => onUpdate(it.id, "actualQuantity", e.target.value)}
                         className="w-16 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={it.actualDays != null ? it.actualDays : 1}
+                        onChange={(e) => onUpdate(it.id, "actualDays", e.target.value)}
+                        className="w-14 text-right border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-teal-50/40"
                       />
                     </td>
                     <td className="py-1.5 text-right font-medium">
@@ -230,7 +253,7 @@ function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }
           </div>
         </>
       ) : (
-        <p className="text-xs text-slate-400">항목을 추가하면 단가×인원수로 예산/집행 금액이 자동 계산돼요.</p>
+        <p className="text-xs text-slate-400">항목을 추가하면 단가×인원수×운용일수로 예산/집행 금액이 자동 계산돼요.</p>
       )}
     </div>
   );
@@ -332,21 +355,43 @@ export default function App() {
   function recalcLaborItem(it) {
     return {
       ...it,
-      budgetAmount: (it.unitPrice || 0) * (it.quantity != null ? it.quantity : 1),
-      actualAmount: (it.actualUnitPrice || 0) * (it.actualQuantity != null ? it.actualQuantity : 1),
+      budgetAmount:
+        (it.unitPrice || 0) * (it.quantity != null ? it.quantity : 1) * (it.days != null ? it.days : 1),
+      actualAmount:
+        (it.actualUnitPrice || 0) *
+        (it.actualQuantity != null ? it.actualQuantity : 1) *
+        (it.actualDays != null ? it.actualDays : 1),
     };
   }
   function addLaborExpense() {
     setLaborExpenses((prev) => [
       ...prev,
-      recalcLaborItem({ id: nextId(), name: "", unitPrice: 0, actualUnitPrice: 0, quantity: 1, actualQuantity: 1 }),
+      recalcLaborItem({
+        id: nextId(),
+        name: "",
+        unitPrice: 0,
+        actualUnitPrice: 0,
+        quantity: 1,
+        actualQuantity: 1,
+        days: 1,
+        actualDays: 1,
+      }),
     ]);
   }
   function addDefaultLaborRoles() {
     setLaborExpenses((prev) => [
       ...prev,
       ...DEFAULT_LABOR_ROLES.map((name) =>
-        recalcLaborItem({ id: nextId(), name, unitPrice: 0, actualUnitPrice: 0, quantity: 1, actualQuantity: 1 })
+        recalcLaborItem({
+          id: nextId(),
+          name,
+          unitPrice: 0,
+          actualUnitPrice: 0,
+          quantity: 1,
+          actualQuantity: 1,
+          days: 1,
+          actualDays: 1,
+        })
       ),
     ]);
   }
@@ -1228,6 +1273,7 @@ export default function App() {
       const newIrregular = new Set(irregularOptions);
       const floorSet = new Set(floors);
       let facilityCount = 0;
+      const roomNumberShortfalls = []; // "수량"보다 "호수" 목록이 모자란 룸타입 경고용
 
       if (format === "B") {
         // 설계팀 룸믹스: 행 하나 = 룸타입 하나. 침대타입/욕조유무/객실등급은 라벨에서 추측하지 않고
@@ -1244,6 +1290,13 @@ export default function App() {
           if (!roomNumStr) continue; // 호수 없는 행(부대시설 등)은 건너뜀
           const roomNumbers = parseRoomNumberTokens(roomNumStr);
           if (roomNumbers.length === 0) continue;
+          // "수량"이 진짜 기준값 — 호수 목록에 오타/누락으로 개수가 모자라면(원본 파일 자체의 흔한 실수)
+          // 조용히 객실수가 줄어들지 않도록 부족한 만큼 "미기재" 자리를 채워 총 객실수를 수량과 맞춘다
+          if (qtyNum && qtyNum > 0 && roomNumbers.length < qtyNum) {
+            const shortfall = qtyNum - roomNumbers.length;
+            for (let m = 1; m <= shortfall; m++) roomNumbers.push(`미기재-${m}`);
+            roomNumberShortfalls.push(`${label}(${shortfall}개)`);
+          }
           const maxOcc = colIdx.maxOcc !== -1 ? String(row[colIdx.maxOcc] || "").trim() : "";
           const maxOccNum = maxOcc === "" ? null : parseInt(maxOcc.replace(/[^0-9]/g, ""), 10);
 
@@ -1251,7 +1304,8 @@ export default function App() {
 
           const byFloor = {};
           roomNumbers.forEach((num) => {
-            const f = floorFromRoomNumber(num);
+            const isPlaceholder = String(num).startsWith("미기재");
+            const f = isPlaceholder ? "미배치" : floorFromRoomNumber(num);
             if (!f) return;
             floorSet.add(f);
             byFloor[f] = (byFloor[f] || 0) + 1;
@@ -1391,7 +1445,10 @@ export default function App() {
           ? `설계팀 룸믹스 형식으로 인식했어요. 룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요. 침대타입·욕조유무·객실등급은 기본값으로 채워졌으니 필요하면 직접 수정해주세요.`
           : `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.` +
             (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "")) +
-          (overwriteOnImport ? " 기존에 같은 룸타입이 있으면 덮어썼어요." : "")
+          (overwriteOnImport ? " 기존에 같은 룸타입이 있으면 덮어썼어요." : "") +
+          (roomNumberShortfalls.length > 0
+            ? ` ⚠️ 다음 룸타입은 "수량"보다 "호수" 목록이 모자라 부족한 만큼 "미기재-N"으로 채워 넣었어요(총 객실수는 정확함, 호수만 비어있음) — 층별 배치표에서 실제 호수로 직접 채워주세요: ${roomNumberShortfalls.join(", ")}`
+            : "")
       );
     } catch (err) {
       setImportError("파일을 읽는 중 문제가 발생했어요. xlsx 형식인지 확인해주세요.");
