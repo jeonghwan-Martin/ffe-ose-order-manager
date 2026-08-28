@@ -485,31 +485,71 @@ export default function App() {
   // 룸타입의 category와 일치하는 전용 콘텐츠 + 모든 룸타입 공통 베이스를 함께 가져옴
   const [loadingPresetFor, setLoadingPresetFor] = useState(null);
   const [presetError, setPresetError] = useState("");
-  async function loadCatalogPresetForRoomType(rt) {
+  // 카탈로그 기본세트를 즉시 다 쏟아붓지 않고, 먼저 불러온 뒤 세부 카테고리(린넨류/타올류 등)를
+  // 골라서 선택한 것만 실제로 추가하는 중간 선택 단계 — presetPickerFor: roomTypeId | "OSE" | null
+  const [presetPickerFor, setPresetPickerFor] = useState(null);
+  const [presetPickerItems, setPresetPickerItems] = useState([]);
+  const [presetPickerSelectedCats, setPresetPickerSelectedCats] = useState(new Set());
+  const presetPickerCatCounts = useMemo(() => {
+    const map = new Map();
+    presetPickerItems.forEach((p) => {
+      const cat = p.subCategory || "기타";
+      map.set(cat, (map.get(cat) || 0) + 1);
+    });
+    return [...map.entries()];
+  }, [presetPickerItems]);
+  function togglePresetPickerCat(cat) {
+    setPresetPickerSelectedCats((prev) => {
+      const next = new Set(prev);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
+      return next;
+    });
+  }
+  function cancelPresetPicker() {
+    setPresetPickerFor(null);
+    setPresetPickerItems([]);
+  }
+  function presetItemsToObjects(presets) {
+    return presets.map((p) => ({
+      id: nextId(),
+      name: p.name,
+      unitPrice: p.unitPrice,
+      actualUnitPrice: 0,
+      installUnitPrice: 0,
+      installActualUnitPrice: 0,
+      qtyPerRoom: p.qtyPerRoom,
+      calcBasis: p.calcBasis,
+      multiplier: p.multiplier,
+      mattressSize: p.mattressSize,
+      catalogItemId: p.catalogItemId,
+      categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, 카드 위치와 무관
+      subCategory: p.subCategory, // 세부 품목군(객실비품/린넨류/타올류/매트리스/기기류)
+      cartonSize: p.cartonSize, // 박스/팩당 개수(카탈로그 값) — 있으면 필요수량을 이 배수로 올림해서 발주수량 산출
+    }));
+  }
+  function confirmPresetPicker() {
+    const chosen = presetPickerItems.filter((p) =>
+      presetPickerSelectedCats.has(p.subCategory || "기타")
+    );
+    const newItems = presetItemsToObjects(chosen);
+    if (presetPickerFor === "OSE") {
+      setOseItems((prev) => [...prev, ...newItems]);
+    } else if (presetPickerFor) {
+      setFfeItems((prev) => ({
+        ...prev,
+        [presetPickerFor]: [...(prev[presetPickerFor] || []), ...newItems],
+      }));
+    }
+    cancelPresetPicker();
+  }
+  async function openPresetPicker(rt) {
     setLoadingPresetFor(rt.id);
     setPresetError("");
     try {
       const presets = await fetchContentPresets(rt.category);
-      const newItems = presets.map((p) => ({
-        id: nextId(),
-        name: p.name,
-        unitPrice: p.unitPrice,
-        actualUnitPrice: 0,
-        installUnitPrice: 0,
-        installActualUnitPrice: 0,
-        qtyPerRoom: p.qtyPerRoom,
-        calcBasis: p.calcBasis,
-        multiplier: p.multiplier,
-        mattressSize: p.mattressSize,
-        catalogItemId: p.catalogItemId,
-        categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, 이 카드(룸타입별) 위치와 무관
-        subCategory: p.subCategory, // 세부 품목군(객실비품/린넨류/타올류/매트리스/기기류)
-        cartonSize: p.cartonSize, // 박스/팩당 개수(카탈로그 값) — 있으면 필요수량을 이 배수로 올림해서 발주수량 산출
-      }));
-      setFfeItems((prev) => ({
-        ...prev,
-        [rt.id]: [...(prev[rt.id] || []), ...newItems],
-      }));
+      setPresetPickerItems(presets);
+      setPresetPickerSelectedCats(new Set(presets.map((p) => p.subCategory || "기타")));
+      setPresetPickerFor(rt.id);
     } catch (err) {
       setPresetError(`기본세트를 불러오지 못했어요: ${err.message}`);
     } finally {
@@ -568,28 +608,17 @@ export default function App() {
     setOseItems((prev) => prev.filter((it) => it.id !== itemId));
   }
 
-  // Supabase content_presets(room 기준 공통베이스)를 OS&E 공통 품목 리스트에 불러와 채워넣음
+  // Supabase content_presets(room 기준 공통베이스)를 OS&E 공통 품목 리스트에 불러오기 위한 선택 단계 진입
   const [loadingOsePreset, setLoadingOsePreset] = useState(false);
   const [osePresetError, setOsePresetError] = useState("");
-  async function loadCatalogPresetForOse() {
+  async function openOsePresetPicker() {
     setLoadingOsePreset(true);
     setOsePresetError("");
     try {
       const presets = await fetchOseContentPresets();
-      const newItems = presets.map((p) => ({
-        id: nextId(),
-        name: p.name,
-        unitPrice: p.unitPrice,
-        actualUnitPrice: 0,
-        installUnitPrice: 0,
-        installActualUnitPrice: 0,
-        qtyPerRoom: p.qtyPerRoom,
-        catalogItemId: p.catalogItemId,
-        categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, "OS&E 공통 품목" 카드 위치와 무관
-        subCategory: p.subCategory,
-        cartonSize: p.cartonSize,
-      }));
-      setOseItems((prev) => [...prev, ...newItems]);
+      setPresetPickerItems(presets);
+      setPresetPickerSelectedCats(new Set(presets.map((p) => p.subCategory || "기타")));
+      setPresetPickerFor("OSE");
     } catch (err) {
       setOsePresetError(`기본세트를 불러오지 못했어요: ${err.message}`);
     } finally {
@@ -2613,7 +2642,7 @@ export default function App() {
                           기본 세트 추가
                         </button>
                         <button
-                          onClick={() => loadCatalogPresetForRoomType(rt)}
+                          onClick={() => openPresetPicker(rt)}
                           disabled={loadingPresetFor === rt.id}
                           title="Supabase 전사 표준 템플릿(공통베이스+룸타입 전용콘텐츠)을 room/capacity/bed 기준수량 그대로 불러옴"
                           className="text-xs border border-amber-300 text-amber-700 rounded-lg px-2.5 py-1 hover:bg-amber-50 disabled:opacity-50"
@@ -2664,6 +2693,43 @@ export default function App() {
                     </div>
                     {!collapsedRoomTypeIds.has(rt.id) && (
                     <>
+                    {presetPickerFor === rt.id && (
+                      <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                        <p className="text-[11px] text-slate-600 mb-2">
+                          불러올 카테고리를 선택하세요 (기본은 전체 선택됨)
+                        </p>
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          {presetPickerCatCounts.map(([cat, count]) => (
+                            <label
+                              key={cat}
+                              className="flex items-center gap-1.5 text-xs bg-white border border-slate-200 rounded-md px-2 py-1 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={presetPickerSelectedCats.has(cat)}
+                                onChange={() => togglePresetPickerCat(cat)}
+                              />
+                              {cat} ({count})
+                            </label>
+                          ))}
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={cancelPresetPicker}
+                            className="text-xs border border-slate-300 rounded-md px-3 py-1 hover:bg-white"
+                          >
+                            취소
+                          </button>
+                          <button
+                            onClick={confirmPresetPicker}
+                            disabled={presetPickerSelectedCats.size === 0}
+                            className="text-xs bg-amber-700 text-white px-3 py-1 rounded-md hover:bg-amber-800 disabled:opacity-50"
+                          >
+                            선택한 카테고리 불러오기
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {pasteOpenFor === rt.id && (
                       <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
                         <p className="text-[11px] text-slate-500 mb-1.5">
@@ -2853,7 +2919,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-1.5">
               <button
-                onClick={loadCatalogPresetForOse}
+                onClick={openOsePresetPicker}
                 disabled={loadingOsePreset}
                 title="Supabase 전사 표준 템플릿 중 룸타입에 무관한 공통(room 기준) 품목을 불러옴 — 침구/베개 등 룸타입별 품목은 각 룸타입 카드에서 불러오세요"
                 className="text-xs border border-amber-300 text-amber-700 rounded-lg px-2.5 py-1 hover:bg-amber-50 disabled:opacity-50"
@@ -2876,6 +2942,43 @@ export default function App() {
           </div>
           {osePresetError && (
             <p className="text-xs text-red-600 mb-2">{osePresetError}</p>
+          )}
+          {presetPickerFor === "OSE" && (
+            <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p className="text-[11px] text-slate-600 mb-2">
+                불러올 카테고리를 선택하세요 (기본은 전체 선택됨)
+              </p>
+              <div className="flex flex-wrap gap-2 mb-3">
+                {presetPickerCatCounts.map(([cat, count]) => (
+                  <label
+                    key={cat}
+                    className="flex items-center gap-1.5 text-xs bg-white border border-slate-200 rounded-md px-2 py-1 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={presetPickerSelectedCats.has(cat)}
+                      onChange={() => togglePresetPickerCat(cat)}
+                    />
+                    {cat} ({count})
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={cancelPresetPicker}
+                  className="text-xs border border-slate-300 rounded-md px-3 py-1 hover:bg-white"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={confirmPresetPicker}
+                  disabled={presetPickerSelectedCats.size === 0}
+                  className="text-xs bg-amber-700 text-white px-3 py-1 rounded-md hover:bg-amber-800 disabled:opacity-50"
+                >
+                  선택한 카테고리 불러오기
+                </button>
+              </div>
+            </div>
           )}
           {pasteOpenFor === "OSE" && (
             <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg p-3">
