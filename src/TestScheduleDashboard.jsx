@@ -11,6 +11,19 @@ const sbHeaders = {
   "Content-Type": "application/json",
 };
 
+// 구글 캘린더 → Supabase 동기화용 Apps Script 웹앱(doGet?action=syncNow). 매일 오전 7시 자동 실행되는
+// 것과 같은 함수(syncOpenBuyingCalendar)를 수동으로도 바로 돌릴 수 있게 웹앱으로 배포해둔 URL.
+const CALENDAR_SYNC_URL =
+  "https://script.google.com/macros/s/AKfycbwe8Ol1nvPHrDEHbtYwamgZgFQ_NtBet32g9vD1PNXhg4q0ipSUFjRW2zYp0uYl_WwFjA/exec";
+
+async function syncCalendarNow() {
+  const res = await fetch(`${CALENDAR_SYNC_URL}?action=syncNow`);
+  if (!res.ok) throw new Error(`동기화 요청 실패 (${res.status})`);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.message || "동기화에 실패했어요.");
+  return data;
+}
+
 async function fetchAll() {
   const [pRes, mRes] = await Promise.all([
     fetch(`${SUPABASE_URL}/rest/v1/projects?select=*&order=target_open_date.asc`, {
@@ -193,6 +206,8 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   const [milestones, setMilestones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingCalendar, setSyncingCalendar] = useState(false);
+  const [calendarSyncMessage, setCalendarSyncMessage] = useState(null); // {ok, text}
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
@@ -227,6 +242,23 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
       })
       .catch((e) => alert("새로고침에 실패했어요: " + e.message))
       .finally(() => setRefreshing(false));
+  }
+
+  // "지금 동기화" — 매일 오전 7시 자동으로 도는 캘린더 동기화를 수동으로 즉시 실행.
+  // 동기화 자체는 Apps Script(구글 캘린더 → Supabase)가 처리하고, 끝나면 여기서 최신 마일스톤을 다시 불러온다.
+  function handleSyncCalendar() {
+    setSyncingCalendar(true);
+    setCalendarSyncMessage(null);
+    syncCalendarNow()
+      .then(() => {
+        setCalendarSyncMessage({ ok: true, text: "캘린더 동기화를 완료했어요." });
+        return fetchAll().then(({ projects, milestones }) => {
+          setProjects(projects);
+          setMilestones(milestones);
+        });
+      })
+      .catch((e) => setCalendarSyncMessage({ ok: false, text: "동기화 실패: " + e.message }))
+      .finally(() => setSyncingCalendar(false));
   }
 
   function updateMilestoneField(milestoneId, field, value) {
@@ -750,6 +782,15 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               + 새 프로젝트
             </button>
             <button
+              onClick={handleSyncCalendar}
+              disabled={syncingCalendar}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              title='구글 캘린더의 [OV] 일정을 "현장 설치·오픈바이징 마감" 마일스톤에 지금 바로 반영합니다 (평소엔 매일 오전 7시 자동 실행)'
+            >
+              <span className={syncingCalendar ? "inline-block animate-spin" : "inline-block"}>📅</span>
+              {syncingCalendar ? "동기화 중..." : "캘린더 지금 동기화"}
+            </button>
+            <button
               onClick={refresh}
               disabled={refreshing}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -777,6 +818,15 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             </div>
           </div>
         </div>
+        {calendarSyncMessage && (
+          <div
+            className={`px-6 pb-3 text-xs ${
+              calendarSyncMessage.ok ? "text-emerald-700" : "text-rose-600"
+            }`}
+          >
+            {calendarSyncMessage.text}
+          </div>
+        )}
         <div className="px-6 pb-3 flex items-center gap-4 text-xs text-slate-500">
           {Object.entries(STATUS_STYLE).map(([label, s]) => (
             <div key={label} className="flex items-center gap-1.5">
