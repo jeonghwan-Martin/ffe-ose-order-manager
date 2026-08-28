@@ -354,6 +354,8 @@ export default function App() {
         multiplier: p.multiplier,
         mattressSize: p.mattressSize,
         catalogItemId: p.catalogItemId,
+        categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, 이 카드(룸타입별) 위치와 무관
+        subCategory: p.subCategory, // 세부 품목군(객실비품/린넨류/타올류/매트리스/기기류)
       }));
       setFfeItems((prev) => ({
         ...prev,
@@ -366,7 +368,7 @@ export default function App() {
     }
   }
   function updateFfeItem(roomTypeId, itemId, field, value) {
-    const stringFields = ["name", "calcBasis", "mattressSize"];
+    const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory"];
     setFfeItems((prev) => ({
       ...prev,
       [roomTypeId]: (prev[roomTypeId] || []).map((it) =>
@@ -404,10 +406,11 @@ export default function App() {
     setOseItems((prev) => [...prev, ...parsed]);
   }
   function updateOseItem(itemId, field, value) {
+    const stringFields = ["name", "categoryGroup", "subCategory"];
     setOseItems((prev) =>
       prev.map((it) =>
         it.id === itemId
-          ? { ...it, [field]: field === "name" ? value : Math.max(0, parseFloat(value || "0") || 0) }
+          ? { ...it, [field]: stringFields.includes(field) ? value : Math.max(0, parseFloat(value || "0") || 0) }
           : it
       )
     );
@@ -433,6 +436,8 @@ export default function App() {
         installActualUnitPrice: 0,
         qtyPerRoom: p.qtyPerRoom,
         catalogItemId: p.catalogItemId,
+        categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, "OS&E 공통 품목" 카드 위치와 무관
+        subCategory: p.subCategory,
       }));
       setOseItems((prev) => [...prev, ...newItems]);
     } catch (err) {
@@ -2662,6 +2667,7 @@ export default function App() {
                         <thead>
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                             <th className="py-1.5 font-normal">품목명</th>
+                            <th className="py-1.5 font-normal" title="회계 대분류 — 룸타입 카드 안에 있어도 실제로는 OS&E(린넨/타올 등)일 수 있음">구분</th>
                             <th className="py-1.5 font-normal text-right">공급예산단가</th>
                             <th className="py-1.5 font-normal text-right">공급집행단가</th>
                             <th className="py-1.5 font-normal text-right">설치예산단가</th>
@@ -2684,6 +2690,22 @@ export default function App() {
                                   placeholder="예: 퀸 매트리스"
                                   className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
                                 />
+                              </td>
+                              <td className="py-1.5">
+                                <select
+                                  value={it.categoryGroup || ""}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "categoryGroup", e.target.value)}
+                                  title="대시보드 FF&E/OS&E 집계 기준. 카탈로그에서 불러온 품목은 자동 지정됨"
+                                  className={`text-xs border rounded-md px-1.5 py-1 ${
+                                    !it.categoryGroup
+                                      ? "border-rose-300 text-rose-500 bg-rose-50"
+                                      : "border-slate-200 text-slate-600"
+                                  }`}
+                                >
+                                  <option value="">미지정</option>
+                                  <option value="FF&E">FF&E</option>
+                                  <option value="OS&E">OS&E</option>
+                                </select>
                               </td>
                               <td className="py-1.5">
                                 <input
@@ -2870,6 +2892,7 @@ export default function App() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-1.5 font-normal">품목명</th>
+                  <th className="py-1.5 font-normal" title="회계 대분류 — '공통 품목' 카드에 있어도 실제로는 FF&E일 수 있음(예: 드라이기)">구분</th>
                   <th className="py-1.5 font-normal text-right">공급예산단가</th>
                   <th className="py-1.5 font-normal text-right">공급집행단가</th>
                   <th className="py-1.5 font-normal text-right">설치예산단가</th>
@@ -2891,6 +2914,22 @@ export default function App() {
                         placeholder="예: 객실 타월 세트"
                         className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
                       />
+                    </td>
+                    <td className="py-1.5">
+                      <select
+                        value={it.categoryGroup || ""}
+                        onChange={(e) => updateOseItem(it.id, "categoryGroup", e.target.value)}
+                        title="대시보드 FF&E/OS&E 집계 기준. 카탈로그에서 불러온 품목은 자동 지정됨"
+                        className={`text-xs border rounded-md px-1.5 py-1 ${
+                          !it.categoryGroup
+                            ? "border-rose-300 text-rose-500 bg-rose-50"
+                            : "border-slate-200 text-slate-600"
+                        }`}
+                      >
+                        <option value="">미지정</option>
+                        <option value="FF&E">FF&E</option>
+                        <option value="OS&E">OS&E</option>
+                      </select>
                     </td>
                     <td className="py-1.5">
                       <input
@@ -2991,21 +3030,36 @@ export default function App() {
               <span className="text-sm font-medium tracking-wide text-slate-500">발주 총액</span>
               <div className="text-right">
                 {(() => {
-                  const ffeTotal = roomTypes.reduce((sum, rt) => {
+                  // FF&E/OS&E 구분은 카드 위치(룸타입별 vs 공통)가 아니라 품목별 categoryGroup 기준
+                  let ffeTotal = 0;
+                  let oseTotal = 0;
+                  let unclassifiedTotal = 0;
+                  roomTypes.forEach((rt) => {
                     const items = ffeItems[rt.id] || [];
-                    const roomCount = roomTypeTotal(rt);
-                    return sum + items.reduce((s, it) => s + (it.unitPrice + (it.installUnitPrice || 0)) * ffeItemQty(it, rt), 0);
-                  }, 0);
-                  const oseTotal = oseItems.reduce(
-                    (sum, it) => sum + (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal,
-                    0
-                  );
+                    items.forEach((it) => {
+                      const amt = (it.unitPrice + (it.installUnitPrice || 0)) * ffeItemQty(it, rt);
+                      if (it.categoryGroup === "FF&E") ffeTotal += amt;
+                      else if (it.categoryGroup === "OS&E") oseTotal += amt;
+                      else unclassifiedTotal += amt;
+                    });
+                  });
+                  oseItems.forEach((it) => {
+                    const amt = (it.unitPrice + (it.installUnitPrice || 0)) * it.qtyPerRoom * grandTotal;
+                    if (it.categoryGroup === "FF&E") ffeTotal += amt;
+                    else if (it.categoryGroup === "OS&E") oseTotal += amt;
+                    else unclassifiedTotal += amt;
+                  });
                   return (
                     <div className="space-y-1">
                       <div className="text-xs text-slate-500">
                         FF&E {won(ffeTotal)} + OS&E {won(oseTotal)}
+                        {unclassifiedTotal > 0 && (
+                          <span className="text-rose-500"> + 미지정 {won(unclassifiedTotal)}</span>
+                        )}
                       </div>
-                      <div className="text-lg font-semibold text-slate-800">{won(ffeTotal + oseTotal)}</div>
+                      <div className="text-lg font-semibold text-slate-800">
+                        {won(ffeTotal + oseTotal + unclassifiedTotal)}
+                      </div>
                     </div>
                   );
                 })()}
@@ -3023,15 +3077,44 @@ export default function App() {
             const sumActual = (items, qtyFn) =>
               items.reduce((s, it) => s + ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * qtyFn(it), 0);
 
+            // FF&E/OS&E 대분류 집계는 "룸타입 카드냐 공통 리스트냐"가 아니라 품목별 categoryGroup 기준으로 나눔
+            // (침구/타올처럼 계산은 룸타입별(bed/capacity축)이어도 실제 회계분류는 OS&E인 품목이 섞여있기 때문)
+            const sumBudgetByGroup = (items, qtyFn, group) =>
+              items
+                .filter((it) => it.categoryGroup === group)
+                .reduce((s, it) => s + (it.unitPrice + (it.installUnitPrice || 0)) * qtyFn(it), 0);
+            const sumActualByGroup = (items, qtyFn, group) =>
+              items
+                .filter((it) => it.categoryGroup === group)
+                .reduce((s, it) => s + ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * qtyFn(it), 0);
+
             let ffeBudget = 0;
             let ffeActual = 0;
+            let oseBudget = 0;
+            let oseActual = 0;
+            let unclassifiedBudget = 0;
+            let unclassifiedActual = 0;
             roomTypes.forEach((rt) => {
               const items = ffeItems[rt.id] || [];
-              ffeBudget += sumBudget(items, (it) => ffeItemQty(it, rt));
-              ffeActual += sumActual(items, (it) => ffeItemQty(it, rt));
+              const qtyFn = (it) => ffeItemQty(it, rt);
+              ffeBudget += sumBudgetByGroup(items, qtyFn, "FF&E");
+              ffeActual += sumActualByGroup(items, qtyFn, "FF&E");
+              oseBudget += sumBudgetByGroup(items, qtyFn, "OS&E");
+              oseActual += sumActualByGroup(items, qtyFn, "OS&E");
+              const unclassified = items.filter((it) => it.categoryGroup !== "FF&E" && it.categoryGroup !== "OS&E");
+              unclassifiedBudget += sumBudget(unclassified, qtyFn);
+              unclassifiedActual += sumActual(unclassified, qtyFn);
             });
-            const oseBudget = sumBudget(oseItems, (it) => it.qtyPerRoom * grandTotal);
-            const oseActual = sumActual(oseItems, (it) => it.qtyPerRoom * grandTotal);
+            {
+              const qtyFn = (it) => it.qtyPerRoom * grandTotal;
+              ffeBudget += sumBudgetByGroup(oseItems, qtyFn, "FF&E");
+              ffeActual += sumActualByGroup(oseItems, qtyFn, "FF&E");
+              oseBudget += sumBudgetByGroup(oseItems, qtyFn, "OS&E");
+              oseActual += sumActualByGroup(oseItems, qtyFn, "OS&E");
+              const unclassified = oseItems.filter((it) => it.categoryGroup !== "FF&E" && it.categoryGroup !== "OS&E");
+              unclassifiedBudget += sumBudget(unclassified, qtyFn);
+              unclassifiedActual += sumActual(unclassified, qtyFn);
+            }
             const siteBudget = siteExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
             const siteActual = siteExpenses.reduce((s, it) => s + (it.actualAmount || 0), 0);
             const laborBudget = laborExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
@@ -3039,8 +3122,10 @@ export default function App() {
             const extraBudget = extraExpenses.reduce((s, it) => s + (it.budgetAmount || 0), 0);
             const extraActual = extraExpenses.reduce((s, it) => s + (it.actualAmount || 0), 0);
 
-            const plannedTotal = ffeBudget + oseBudget + siteBudget + laborBudget + extraBudget;
-            const actualTotal = ffeActual + oseActual + siteActual + laborActual + extraActual;
+            const plannedTotal =
+              ffeBudget + oseBudget + unclassifiedBudget + siteBudget + laborBudget + extraBudget;
+            const actualTotal =
+              ffeActual + oseActual + unclassifiedActual + siteActual + laborActual + extraActual;
             const perRoomBudget = grandTotal > 0 ? totalBudget / grandTotal : 0;
             const perRoomPlanned = grandTotal > 0 ? plannedTotal / grandTotal : 0;
             const remaining = totalBudget - actualTotal; // 잔여비 (총예산 - 실사용비)
@@ -3049,6 +3134,9 @@ export default function App() {
             const categoryRows = [
               { name: "FF&E", budget: ffeBudget, actual: ffeActual },
               { name: "OS&E", budget: oseBudget, actual: oseActual },
+              ...(unclassifiedBudget > 0 || unclassifiedActual > 0
+                ? [{ name: "미지정(FF&E/OS&E 구분 필요)", budget: unclassifiedBudget, actual: unclassifiedActual }]
+                : []),
               { name: "현장지출", budget: siteBudget, actual: siteActual },
               { name: "인건비", budget: laborBudget, actual: laborActual },
               { name: "예산외 지출", budget: extraBudget, actual: extraActual },

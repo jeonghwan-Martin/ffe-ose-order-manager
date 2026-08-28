@@ -13,11 +13,13 @@ const sbHeaders = {
 
 // category: 룸타입의 category 값(예: "MASSAGE", 체인형은 보통 "STANDARD" 등 — content_presets에 없는 값이면
 // 공통베이스만 매칭되고 전용콘텐츠는 자연스럽게 매칭 안 됨, 이게 일반형/체인형을 나누는 별도 플래그가 필요 없는 이유)
-// 반환: [{ name, catalogItemId, unitPrice, calcBasis, qtyPerRoom, multiplier, mattressSize }]
+// categoryGroup(FF&E/OS&E)은 "룸타입 카드에서 불러왔냐"가 아니라 catalog_items.accounting_group(진짜 회계 대분류)
+// 그대로 가져온 값 — 침구/타올처럼 계산은 룸타입별(bed/capacity축)이어도 분류는 OS&E인 품목을 정확히 구분하기 위함.
+// 반환: [{ name, catalogItemId, unitPrice, calcBasis, qtyPerRoom, multiplier, mattressSize, categoryGroup, subCategory }]
 export async function fetchContentPresets(category) {
   // PostgREST or= 조건 조합이 복잡해지므로 공통베이스/전용콘텐츠를 두 번 나눠 조회 후 합친다
   const commonRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
     { headers: sbHeaders }
   );
   if (!commonRes.ok) throw new Error(`content_presets(공통) 조회 실패 (${commonRes.status})`);
@@ -26,7 +28,7 @@ export async function fetchContentPresets(category) {
   let categoryRows = [];
   if (category) {
     const catRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price)`,
+      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
       { headers: sbHeaders }
     );
     if (!catRes.ok) throw new Error(`content_presets(전용) 조회 실패 (${catRes.status})`);
@@ -44,17 +46,21 @@ export async function fetchContentPresets(category) {
       qtyPerRoom: Number(row.default_qty) || 0,
       multiplier: row.default_multiplier != null ? Number(row.default_multiplier) : 1,
       mattressSize: row.mattress_size ?? null,
+      categoryGroup: ci.accounting_group ?? null,
+      subCategory: ci.category_group ?? null,
     };
   });
 }
 
-// OS&E(공통 품목) 전용 — content_presets 중 room 기준(calc_basis='room') 공통베이스만 조회.
-// OS&E는 특정 룸타입에 묶이지 않는 프로젝트 전체 공통 품목이라 capacity/bed축(룸타입별 인원·침대구성 필요)은
-// 여기서 계산할 수 없음 — 그 축의 품목(린넨류 등)은 기존처럼 FF&E 쪽(룸타입별 카드)에서 불러오는 게 맞음.
-// OS&E 화면엔 별도 multiplier 컬럼이 없으므로 default_qty×default_multiplier를 미리 곱해 qtyPerRoom 하나로 반환.
+// "OS&E 발주 품목(공통)" 카드 전용 — content_presets 중 room 기준(calc_basis='room') 공통베이스만 조회.
+// 이 카드는 특정 룸타입에 묶이지 않는 프로젝트 전체 공통 리스트라 capacity/bed축(룸타입별 인원·침대구성 필요)은
+// 여기서 계산할 수 없음 — 그 축의 품목(린넨류 등)은 기존처럼 룸타입별 카드에서 불러오는 게 맞음.
+// 주의: 이 카드 이름이 "OS&E"인 것과 품목의 실제 회계분류(categoryGroup)는 별개 — 이 카드에서 불러온 품목도
+// catalog_items.accounting_group이 'FF&E'인 경우(예: 드라이기 같은 룸당 공통 가전) 그대로 FF&E로 집계돼야 함.
+// OS&E 카드 화면엔 별도 multiplier 컬럼이 없으므로 default_qty×default_multiplier를 미리 곱해 qtyPerRoom 하나로 반환.
 export async function fetchOseContentPresets() {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group)`,
     { headers: sbHeaders }
   );
   if (!res.ok) throw new Error(`content_presets(OS&E) 조회 실패 (${res.status})`);
@@ -69,6 +75,8 @@ export async function fetchOseContentPresets() {
         catalogItemId: row.catalog_item_id ?? null,
         unitPrice: Number(ci.reference_supply_price) || 0,
         qtyPerRoom: (Number(row.default_qty) || 0) * mult,
+        categoryGroup: ci.accounting_group ?? null,
+        subCategory: ci.category_group ?? null,
       };
     });
 }
