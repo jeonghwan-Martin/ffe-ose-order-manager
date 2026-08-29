@@ -480,15 +480,16 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
     return map;
   }, [milestones]);
 
-  // 오픈바이징 마감 일정이 오늘보다 이전인 프로젝트 수 — 지난 프로젝트 토글 버튼 표시에 사용
+  // 오픈바이징 마감 일정이 "이번주 시작(월요일)"보다 이전인 프로젝트 수 — 지난 프로젝트 토글 버튼 표시에 사용
+  // (오늘 기준으로 하면 이번주 안에 끝난 일정까지 "지난 프로젝트"로 숨겨져 "이번주 강조"와 충돌하므로 주 단위로 판정)
   const pastProjectCount = useMemo(() => {
     let count = 0;
     for (const p of projects) {
       const end = getOpenMilestoneEnd(milestonesByProject[p.id] || []);
-      if (end && end < today) count++;
+      if (end && end < weekStart) count++;
     }
     return count;
-  }, [projects, milestonesByProject, today]);
+  }, [projects, milestonesByProject, weekStart]);
 
   const { rangeStart, rangeEnd } = useMemo(() => {
     let allDates = [today];
@@ -1009,17 +1010,14 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               if (lastEnd > targetOpen) isDelayed = true;
             }
 
-            // 지난 프로젝트: "현장 설치·오픈바이징 마감" 마일스톤 종료일이 오늘보다 이전
-            // (오픈예정일은 현장과 안 맞는 경우가 많아 기준에서 제외). 토글이 꺼져있으면 렌더링 자체를 건너뜀
+            // 지난 프로젝트: "현장 설치·오픈바이징 마감" 마일스톤 종료일이 "이번주 시작(월요일)"보다 이전
+            // (오늘 기준으로 하면 이번주 안에 끝난 일정까지 지난 프로젝트로 숨겨져 아래 "이번주 강조"와 충돌함)
             const openMilestoneEnd = getOpenMilestoneEnd(pMilestones);
-            const isPast = !!(openMilestoneEnd && openMilestoneEnd < today);
+            const isPast = !!(openMilestoneEnd && openMilestoneEnd < weekStart);
             if (isPast && !showPastProjects) return null;
 
-            // 이번주(월~일) 진행중: 마일스톤 일정이 이번주와 겹치거나, 일정이 없으면 오픈예정일이 이번주인 경우
-            const isThisWeek =
-              !isPast &&
-              (dated.some(({ s, e }) => s <= weekEnd && e >= weekStart) ||
-                (targetOpen && targetOpen >= weekStart && targetOpen <= weekEnd));
+            // 이번주(월~일) 진행중: 마일스톤 일정이 이번주와 겹치는 경우 (지난 프로젝트 여부와 무관하게 판정)
+            const isThisWeek = dated.some(({ s, e }) => s <= weekEnd && e >= weekStart);
 
             const progress = projectProgress(pMilestones, today);
 
