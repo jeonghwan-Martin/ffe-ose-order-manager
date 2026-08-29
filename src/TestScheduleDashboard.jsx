@@ -219,6 +219,8 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   const [rangePopover, setRangePopover] = useState(null); // 드래그 선택 완료 후 마일스톤 선택 팝업
   const rangeMovedRef = useRef(false); // 방금 실제로 드래그했는지(단순 클릭과 구분)
   const scrollRef = useRef(null);
+  const bottomScrollRef = useRef(null); // 하단 고정 가로 스크롤바 — 트랙패드 없이 마우스만 쓰는 사람도 좌우 이동 가능하게
+  const syncingScrollRef = useRef(false); // 두 스크롤바가 서로 onScroll을 트리거해 무한루프 도는 것 방지
 
   useEffect(() => {
     fetchAll()
@@ -740,8 +742,27 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   useEffect(() => {
     if (scrollRef.current && !loading) {
       scrollRef.current.scrollLeft = Math.max(todayX - 120, 0);
+      if (bottomScrollRef.current) bottomScrollRef.current.scrollLeft = scrollRef.current.scrollLeft;
     }
   }, [zoom, loading, todayX]);
+
+  // 본문 타임라인과 하단 고정 스크롤바의 scrollLeft를 서로 동기화
+  function handleTimelineScroll() {
+    if (syncingScrollRef.current) return;
+    syncingScrollRef.current = true;
+    if (bottomScrollRef.current && scrollRef.current) {
+      bottomScrollRef.current.scrollLeft = scrollRef.current.scrollLeft;
+    }
+    syncingScrollRef.current = false;
+  }
+  function handleBottomScrollbarScroll() {
+    if (syncingScrollRef.current) return;
+    syncingScrollRef.current = true;
+    if (bottomScrollRef.current && scrollRef.current) {
+      scrollRef.current.scrollLeft = bottomScrollRef.current.scrollLeft;
+    }
+    syncingScrollRef.current = false;
+  }
 
 
   if (loading) {
@@ -848,8 +869,8 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
         </div>
       </div>
 
-      <div className="overflow-x-auto" ref={scrollRef}>
-        <div style={{ minWidth: totalWidth + 280 }}>
+      <div className="overflow-x-auto" ref={scrollRef} onScroll={handleTimelineScroll}>
+        <div style={{ minWidth: totalWidth + 280, paddingBottom: 16 }}>
           <div
             className="flex border-b border-slate-200 bg-white sticky top-0 z-30"
           >
@@ -1392,6 +1413,16 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               취소
             </button>
           </div>
+        </div>
+      )}
+      {/* 하단 고정 가로 스크롤바 — 트랙패드 없이 마우스만 쓰는 사람도 좌우 스크롤 가능하게(위 타임라인과 위치 동기화) */}
+      {totalWidth > 0 && (
+        <div
+          className="fixed bottom-0 left-0 right-0 h-4 overflow-x-auto overflow-y-hidden bg-white border-t border-slate-200 z-40"
+          ref={bottomScrollRef}
+          onScroll={handleBottomScrollbarScroll}
+        >
+          <div style={{ width: totalWidth + 280, height: 1 }} />
         </div>
       )}
     </div>
