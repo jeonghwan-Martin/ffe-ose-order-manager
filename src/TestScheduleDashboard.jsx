@@ -217,6 +217,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
   const [rangeSelect, setRangeSelect] = useState(null); // 빈 타임라인 영역 드래그 선택(신규 일정 입력)
   const [rangePopover, setRangePopover] = useState(null); // 드래그 선택 완료 후 마일스톤 선택 팝업
+  const [showPastProjects, setShowPastProjects] = useState(false); // 오픈예정일이 지난 프로젝트는 기본적으로 접어서 가시성을 높임
   const rangeMovedRef = useRef(false); // 방금 실제로 드래그했는지(단순 클릭과 구분)
   const scrollRef = useRef(null);
   const bottomScrollRef = useRef(null); // 하단 고정 가로 스크롤바 — 트랙패드 없이 마우스만 쓰는 사람도 좌우 이동 가능하게
@@ -446,6 +447,28 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   }
 
   const today = useMemo(() => new Date(), []);
+
+  // 이번주(월요일~일요일) 범위 — "이번주 진행되는 현장" 강조 판정에 사용
+  const { weekStart, weekEnd } = useMemo(() => {
+    const d = new Date(today);
+    const day = d.getDay(); // 0=일 ... 6=토
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    const start = new Date(d);
+    start.setDate(d.getDate() + diffToMonday);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return { weekStart: start, weekEnd: end };
+  }, [today]);
+
+  // 오픈예정일이 오늘보다 이전인 프로젝트 수 — 지난 프로젝트 토글 버튼 표시에 사용
+  const pastProjectCount = useMemo(() => {
+    return projects.filter((p) => {
+      const t = parseDate(p.target_open_date);
+      return t && t < today;
+    }).length;
+  }, [projects, today]);
 
   const milestonesByProject = useMemo(() => {
     const map = {};
@@ -791,9 +814,25 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
               프로젝트 {projects.length}개 · 오늘 {fmt(today)}
+              {pastProjectCount > 0 && !showPastProjects && (
+                <> · 지난 프로젝트 {pastProjectCount}개 숨김</>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {pastProjectCount > 0 && (
+              <button
+                onClick={() => setShowPastProjects((v) => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border ${
+                  showPastProjects
+                    ? "border-slate-300 text-slate-700 bg-slate-100"
+                    : "border-slate-200 text-slate-500 bg-white hover:bg-slate-50"
+                }`}
+                title="오픈예정일이 오늘보다 지난 프로젝트를 목록에서 접거나 펼칩니다"
+              >
+                {showPastProjects ? "지난 프로젝트 숨기기" : `지난 프로젝트 보기 (${pastProjectCount})`}
+              </button>
+            )}
             <button
               onClick={handleCreateProject}
               disabled={projectActionBusy}
@@ -865,6 +904,10 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
           <div className="flex items-center gap-1.5">
             <span className="inline-block w-2 h-2 rotate-45 bg-amber-400 border border-amber-600" />
             오픈예정일
+          </div>
+          <div className="flex items-center gap-1.5 ml-2 border-l border-slate-200 pl-4">
+            <span className="inline-block w-2.5 h-2.5 rounded-sm bg-indigo-100 border border-indigo-300" />
+            이번주 진행중
           </div>
         </div>
       </div>
@@ -955,6 +998,16 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               if (lastEnd > targetOpen) isDelayed = true;
             }
 
+            // 지난 프로젝트: 오픈예정일이 오늘보다 이전. 토글이 꺼져있으면 렌더링 자체를 건너뜀
+            const isPast = !!(targetOpen && targetOpen < today);
+            if (isPast && !showPastProjects) return null;
+
+            // 이번주(월~일) 진행중: 마일스톤 일정이 이번주와 겹치거나, 일정이 없으면 오픈예정일이 이번주인 경우
+            const isThisWeek =
+              !isPast &&
+              (dated.some(({ s, e }) => s <= weekEnd && e >= weekStart) ||
+                (targetOpen && targetOpen >= weekStart && targetOpen <= weekEnd));
+
             const progress = projectProgress(pMilestones, today);
 
             // 겹치는 마일스톤은 자동으로 레인(줄)을 나눠서 전부 항상 보이게 함(클릭 불필요)
@@ -963,13 +1016,18 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             const rowHeight = 62 + (laneCount - 1) * laneHeight;
 
             return (
-              <div key={p.id} className="border-b border-slate-100">
+              <div
+                key={p.id}
+                className={`border-b border-slate-100 ${
+                  isPast ? "opacity-50 grayscale-[50%]" : ""
+                } ${isThisWeek ? "bg-indigo-50/50" : ""}`}
+              >
                 <div
                   className={`flex hover:bg-slate-50/60 cursor-pointer ${
                     draggedProjectId && draggedProjectId !== p.id
                       ? "border-t-2 border-t-transparent hover:border-t-indigo-400"
                       : ""
-                  }`}
+                  } ${isThisWeek ? "border-l-2 border-l-indigo-400" : ""}`}
                   onClick={() => toggleExpand(p.id)}
                   onDragOver={(evt) => evt.preventDefault()}
                   onDrop={(evt) => {
@@ -1035,6 +1093,11 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
                         ) : (
                           <>
                             <span className="truncate">{p.name}</span>
+                            {isThisWeek && (
+                              <span className="flex-shrink-0 text-[10px] font-semibold text-indigo-600 bg-indigo-100 rounded px-1.5 py-0.5">
+                                이번주
+                              </span>
+                            )}
                             <button
                               type="button"
                               onClick={(evt) => {
