@@ -188,6 +188,14 @@ function milestoneProgress(m, today) {
   return 0;
 }
 
+// "현장 설치·오픈바이징 마감" 마일스톤의 종료일(실제 종료일 우선, 없으면 계획 종료일)
+// — "지난 프로젝트" 판정 기준(오픈예정일 대신 실제 오픈바이징 일정 사용)
+function getOpenMilestoneEnd(pMilestones) {
+  const m = pMilestones.find((x) => x.name === "현장 설치·오픈바이징 마감");
+  if (!m) return null;
+  return parseDate(m.actual_end_date) || parseDate(m.planned_end_date);
+}
+
 // 프로젝트 전체 공정률 — 마일스톤 weight로 가중평균
 function projectProgress(pMilestones, today) {
   let totalWeight = 0;
@@ -212,6 +220,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   const [zoom, setZoom] = useState("day");
   const [expanded, setExpanded] = useState(new Set());
   const [editingProjectId, setEditingProjectId] = useState(null); // 프로젝트명 인라인 수정 중인 항목
+  const [editingOpenDateId, setEditingOpenDateId] = useState(null); // 오픈예정일 인라인 수정 중인 항목
   const [hovered, setHovered] = useState(null);
   const [dragState, setDragState] = useState(null); // 마일스톤 바 드래그(날짜 변경)
   const [draggedProjectId, setDraggedProjectId] = useState(null); // 프로젝트 행 순서 드래그
@@ -462,14 +471,6 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
     return { weekStart: start, weekEnd: end };
   }, [today]);
 
-  // 오픈예정일이 오늘보다 이전인 프로젝트 수 — 지난 프로젝트 토글 버튼 표시에 사용
-  const pastProjectCount = useMemo(() => {
-    return projects.filter((p) => {
-      const t = parseDate(p.target_open_date);
-      return t && t < today;
-    }).length;
-  }, [projects, today]);
-
   const milestonesByProject = useMemo(() => {
     const map = {};
     for (const m of milestones) {
@@ -478,6 +479,16 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
     }
     return map;
   }, [milestones]);
+
+  // 오픈바이징 마감 일정이 오늘보다 이전인 프로젝트 수 — 지난 프로젝트 토글 버튼 표시에 사용
+  const pastProjectCount = useMemo(() => {
+    let count = 0;
+    for (const p of projects) {
+      const end = getOpenMilestoneEnd(milestonesByProject[p.id] || []);
+      if (end && end < today) count++;
+    }
+    return count;
+  }, [projects, milestonesByProject, today]);
 
   const { rangeStart, rangeEnd } = useMemo(() => {
     let allDates = [today];
@@ -828,7 +839,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
                     ? "border-slate-300 text-slate-700 bg-slate-100"
                     : "border-slate-200 text-slate-500 bg-white hover:bg-slate-50"
                 }`}
-                title="오픈예정일이 오늘보다 지난 프로젝트를 목록에서 접거나 펼칩니다"
+                title="현장 설치·오픈바이징 마감 일정이 오늘보다 지난 프로젝트를 목록에서 접거나 펼칩니다"
               >
                 {showPastProjects ? "지난 프로젝트 숨기기" : `지난 프로젝트 보기 (${pastProjectCount})`}
               </button>
@@ -998,8 +1009,10 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
               if (lastEnd > targetOpen) isDelayed = true;
             }
 
-            // 지난 프로젝트: 오픈예정일이 오늘보다 이전. 토글이 꺼져있으면 렌더링 자체를 건너뜀
-            const isPast = !!(targetOpen && targetOpen < today);
+            // 지난 프로젝트: "현장 설치·오픈바이징 마감" 마일스톤 종료일이 오늘보다 이전
+            // (오픈예정일은 현장과 안 맞는 경우가 많아 기준에서 제외). 토글이 꺼져있으면 렌더링 자체를 건너뜀
+            const openMilestoneEnd = getOpenMilestoneEnd(pMilestones);
+            const isPast = !!(openMilestoneEnd && openMilestoneEnd < today);
             if (isPast && !showPastProjects) return null;
 
             // 이번주(월~일) 진행중: 마일스톤 일정이 이번주와 겹치거나, 일정이 없으면 오픈예정일이 이번주인 경우
@@ -1141,8 +1154,38 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
                           </>
                         )}
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
-                        오픈예정 {fmt(targetOpen)}
+                      <div
+                        className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1"
+                        onClick={(evt) => evt.stopPropagation()}
+                      >
+                        오픈예정{" "}
+                        {editingOpenDateId === p.id ? (
+                          <input
+                            type="date"
+                            autoFocus
+                            value={p.target_open_date || ""}
+                            onChange={(e) => {
+                              const v = e.target.value || null;
+                              updateProjectField(p.id, "target_open_date", v);
+                              saveProjectField(p.id, "target_open_date", v);
+                            }}
+                            onBlur={() => setEditingOpenDateId(null)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === "Escape")
+                                setEditingOpenDateId(null);
+                            }}
+                            className="bg-white border border-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-300 rounded px-1 py-0 text-[11px] leading-tight"
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setEditingOpenDateId(p.id)}
+                            title="클릭해서 오픈예정일 수정"
+                            className="hover:text-indigo-500 underline decoration-dotted underline-offset-2"
+                          >
+                            {fmt(targetOpen)}
+                          </button>
+                        )}
                         {isDelayed && (
                           <span className="text-rose-600 font-medium ml-1">지연</span>
                         )}
