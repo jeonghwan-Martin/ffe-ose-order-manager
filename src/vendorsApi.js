@@ -17,10 +17,14 @@ function fromRow(row) {
   return {
     id: row.id,
     name: row.name || "",
+    itemGroup: row.item_group || "",
+    category: row.category || "",
+    bankName: row.bank_name || "",
+    accountNumber: row.account_number || "",
+    accountHolder: row.account_holder || "",
     contactName: row.contact_name || "",
     phone: row.phone || "",
     email: row.email || "",
-    category: row.category || "",
     remark: row.remark || "",
   };
 }
@@ -36,17 +40,32 @@ export async function loadVendors() {
 }
 
 // 업체 신규 생성 — name만 필수, 나머지는 비워서 만든 뒤 인라인으로 채울 수 있음
-export async function createVendor({ name, contactName = "", phone = "", email = "", category = "", remark = "" }) {
+export async function createVendor({
+  name,
+  itemGroup = "",
+  category = "",
+  bankName = "",
+  accountNumber = "",
+  accountHolder = "",
+  contactName = "",
+  phone = "",
+  email = "",
+  remark = "",
+}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/vendors`, {
     method: "POST",
     headers: { ...sbHeaders, Prefer: "return=representation" },
     body: JSON.stringify([
       {
         name: name || "",
+        item_group: itemGroup || null,
+        category: category || null,
+        bank_name: bankName || null,
+        account_number: accountNumber || null,
+        account_holder: accountHolder || null,
         contact_name: contactName || null,
         phone: phone || null,
         email: email || null,
-        category: category || null,
         remark: remark || null,
       },
     ]),
@@ -59,10 +78,14 @@ export async function createVendor({ name, contactName = "", phone = "", email =
 // 필드 하나(또는 여러 개) 업데이트 — field는 camelCase 키, patch는 { [field]: value } 형태
 const FIELD_TO_COLUMN = {
   name: "name",
+  itemGroup: "item_group",
+  category: "category",
+  bankName: "bank_name",
+  accountNumber: "account_number",
+  accountHolder: "account_holder",
   contactName: "contact_name",
   phone: "phone",
   email: "email",
-  category: "category",
   remark: "remark",
 };
 

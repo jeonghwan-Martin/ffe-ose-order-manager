@@ -278,12 +278,16 @@ function VendorManagement({ vendors, loading, error, onReload, onAdd, onFieldCha
   }
 
   const COLUMNS = [
-    { field: "name", label: "업체명", width: "w-40", placeholder: "예: 대주상사" },
+    { field: "name", label: "업체명", width: "w-32", placeholder: "예: 대주상사" },
+    { field: "itemGroup", label: "항목", width: "w-24", placeholder: "예: 초도비품" },
+    { field: "category", label: "분류", width: "w-28", placeholder: "예: 린넨류" },
+    { field: "bankName", label: "은행", width: "w-20", placeholder: "" },
+    { field: "accountNumber", label: "계좌번호", width: "w-32", placeholder: "" },
+    { field: "accountHolder", label: "예금주", width: "w-32", placeholder: "" },
     { field: "contactName", label: "담당자", width: "w-24", placeholder: "" },
-    { field: "phone", label: "연락처", width: "w-32", placeholder: "010-0000-0000" },
-    { field: "email", label: "이메일", width: "w-44", placeholder: "" },
-    { field: "category", label: "분류", width: "w-28", placeholder: "예: 린넨" },
-    { field: "remark", label: "비고", width: "w-40", placeholder: "" },
+    { field: "phone", label: "연락처", width: "w-28", placeholder: "010-0000-0000" },
+    { field: "email", label: "이메일", width: "w-36", placeholder: "" },
+    { field: "remark", label: "비고", width: "w-32", placeholder: "" },
   ];
 
   return (
