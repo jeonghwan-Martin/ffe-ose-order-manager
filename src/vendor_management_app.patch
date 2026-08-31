@@ -1,0 +1,230 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index d71fe0d..567edcb 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -13,6 +13,7 @@ import { saveExpenses, loadExpenses } from "./expensesApi";
+ import { resolveProjectUuid } from "./projectIdApi";
+ import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
+ import { fetchContentPresets, fetchOseContentPresets } from "./contentPresetsApi";
++import { loadVendors, createVendor, updateVendor, deleteVendor } from "./vendorsApi";
+ import TestScheduleDashboard from "./TestScheduleDashboard";
+ 
+ const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
+@@ -259,6 +260,119 @@ function LaborExpenseSection({ items, onAdd, onAddDefaults, onUpdate, onRemove }
+   );
+ }
+ 
++// 업체 마스터 관리 — 전역 공통(vendors 테이블), 특정 프로젝트에 속하지 않음.
++// 저장 버튼 없이 각 입력/추가/삭제가 즉시 Supabase에 반영됨(vendorsApi.js, 프로젝트 추가/삭제와 동일한 방식).
++function VendorManagement({ vendors, loading, error, onReload, onAdd, onFieldChange, onFieldCommit, onRemove }) {
++  const [newName, setNewName] = useState("");
++  const [adding, setAdding] = useState(false);
++
++  async function handleAdd() {
++    if (!newName.trim()) return;
++    setAdding(true);
++    try {
++      await onAdd(newName.trim());
++      setNewName("");
++    } finally {
++      setAdding(false);
++    }
++  }
++
++  const COLUMNS = [
++    { field: "name", label: "업체명", width: "w-40", placeholder: "예: 대주상사" },
++    { field: "contactName", label: "담당자", width: "w-24", placeholder: "" },
++    { field: "phone", label: "연락처", width: "w-32", placeholder: "010-0000-0000" },
++    { field: "email", label: "이메일", width: "w-44", placeholder: "" },
++    { field: "category", label: "분류", width: "w-28", placeholder: "예: 린넨" },
++    { field: "remark", label: "비고", width: "w-40", placeholder: "" },
++  ];
++
++  return (
++    <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
++      <div className="flex items-center justify-between">
++        <div>
++          <h2 className="text-base font-semibold text-slate-800">업체 관리</h2>
++          <p className="text-xs text-slate-500 mt-0.5">
++            전역 공통 업체 마스터 — 여기서 등록한 업체를 발주 품목에 배정하고, 발주서 생성 시 업체별로 그룹핑합니다.
++          </p>
++        </div>
++        <button
++          onClick={onReload}
++          className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 flex items-center gap-1"
++        >
++          <Loader2 size={13} className={loading ? "animate-spin" : ""} /> 새로고침
++        </button>
++      </div>
++
++      {error && (
++        <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">{error}</p>
++      )}
++
++      <div className="flex items-end gap-2">
++        <div className="flex-1 max-w-xs">
++          <label className="block text-xs text-slate-500 mb-1">새 업체명</label>
++          <input
++            value={newName}
++            onChange={(e) => setNewName(e.target.value)}
++            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
++            placeholder="업체명 입력 후 추가"
++            className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
++          />
++        </div>
++        <button
++          onClick={handleAdd}
++          disabled={!newName.trim() || adding}
++          className="text-sm bg-amber-700 text-white px-3 py-1.5 rounded-lg hover:bg-amber-800 disabled:opacity-50 flex items-center gap-1.5"
++        >
++          <Plus size={14} /> 업체 추가
++        </button>
++      </div>
++
++      {loading ? (
++        <p className="text-xs text-slate-400 flex items-center gap-1.5">
++          <Loader2 size={13} className="animate-spin" /> 불러오는 중...
++        </p>
++      ) : vendors.length === 0 ? (
++        <p className="text-xs text-slate-400">등록된 업체가 없습니다. 위에서 업체명을 입력해 추가하세요.</p>
++      ) : (
++        <div className="overflow-x-auto">
++          <table className="w-full text-sm">
++            <thead>
++              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
++                {COLUMNS.map((c) => (
++                  <th key={c.field} className="py-1.5 font-normal pr-2">{c.label}</th>
++                ))}
++                <th></th>
++              </tr>
++            </thead>
++            <tbody>
++              {vendors.map((v) => (
++                <tr key={v.id} className="border-b border-slate-100">
++                  {COLUMNS.map((c) => (
++                    <td key={c.field} className="py-1.5 pr-2">
++                      <input
++                        value={v[c.field] || ""}
++                        placeholder={c.placeholder}
++                        onChange={(e) => onFieldChange(v.id, c.field, e.target.value)}
++                        onBlur={(e) => onFieldCommit(v.id, c.field, e.target.value)}
++                        className={`${c.width} border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500`}
++                      />
++                    </td>
++                  ))}
++                  <td className="py-1.5 pl-2">
++                    <button onClick={() => onRemove(v)} className="text-slate-400 hover:text-rose-600" title="삭제">
++                      <Trash2 size={14} />
++                    </button>
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++      )}
++    </div>
++  );
++}
++
+ 
+ export default function App() {
+   const [projectName, setProjectName] = useState("");
+@@ -312,7 +426,68 @@ export default function App() {
+   }
+ 
+   const [roomTypes, setRoomTypes] = useState([]);
+-  const [activeTab, setActiveTab] = useState("main"); // "main" | "test-schedule"
++  const [activeTab, setActiveTab] = useState("main"); // "main" | "test-schedule" | "vendors"
++
++  // 업체 마스터(전역 공통, vendors 테이블) — "업체 관리" 탭을 처음 열 때 로드
++  const [vendors, setVendors] = useState([]);
++  const [vendorsLoaded, setVendorsLoaded] = useState(false);
++  const [vendorsLoading, setVendorsLoading] = useState(false);
++  const [vendorsError, setVendorsError] = useState("");
++
++  async function reloadVendors() {
++    setVendorsLoading(true);
++    setVendorsError("");
++    try {
++      const list = await loadVendors();
++      setVendors(list);
++      setVendorsLoaded(true);
++    } catch (err) {
++      setVendorsError(err.message || "업체 목록을 불러오지 못했습니다.");
++    } finally {
++      setVendorsLoading(false);
++    }
++  }
++
++  useEffect(() => {
++    if (activeTab === "vendors" && !vendorsLoaded) {
++      reloadVendors();
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [activeTab]);
++
++  async function handleAddVendor(name) {
++    setVendorsError("");
++    try {
++      const created = await createVendor({ name });
++      setVendors((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ko")));
++    } catch (err) {
++      setVendorsError(err.message || "업체 추가에 실패했습니다.");
++    }
++  }
++
++  // 입력 중엔 로컬 상태만 갱신(타이핑마다 요청 보내지 않음), blur 시점에 실제 저장
++  function handleVendorFieldChange(id, field, value) {
++    setVendors((prev) => prev.map((v) => (v.id === id ? { ...v, [field]: value } : v)));
++  }
++
++  async function handleVendorFieldCommit(id, field, value) {
++    try {
++      await updateVendor(id, { [field]: value });
++    } catch (err) {
++      setVendorsError(err.message || "업체 정보 저장에 실패했습니다.");
++    }
++  }
++
++  async function handleRemoveVendor(vendor) {
++    if (!window.confirm(`"${vendor.name}" 업체를 삭제할까요?`)) return;
++    setVendorsError("");
++    try {
++      await deleteVendor(vendor.id);
++      setVendors((prev) => prev.filter((v) => v.id !== vendor.id));
++    } catch (err) {
++      setVendorsError(err.message || "업체 삭제에 실패했습니다.");
++    }
++  }
+   const [showFloorPlan, setShowFloorPlan] = useState(true);
+   const [floorPlanAutoOffApplied, setFloorPlanAutoOffApplied] = useState(false);
+ 
+@@ -1603,6 +1778,7 @@ export default function App() {
+           {[
+             { key: "main", label: "발주 관리" },
+             { key: "test-schedule", label: "테스트 공정표" },
++            { key: "vendors", label: "업체 관리" },
+           ].map((t) => (
+             <button
+               key={t.key}
+@@ -1622,6 +1798,19 @@ export default function App() {
+           <TestScheduleDashboard onOpenInOrderManager={handleOpenInOrderManager} />
+         )}
+ 
++        {activeTab === "vendors" && (
++          <VendorManagement
++            vendors={vendors}
++            loading={vendorsLoading}
++            error={vendorsError}
++            onReload={reloadVendors}
++            onAdd={handleAddVendor}
++            onFieldChange={handleVendorFieldChange}
++            onFieldCommit={handleVendorFieldCommit}
++            onRemove={handleRemoveVendor}
++          />
++        )}
++
+         {activeTab === "main" && (
+           <>
+         {/* Header / project */}
