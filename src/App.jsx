@@ -378,6 +378,71 @@ function VendorManagement({ vendors, loading, error, onReload, onAdd, onFieldCha
 }
 
 
+// 발주 준비 상태 패널 — 업체별 품목/금액 집계 + 미배정·가단가 경고.
+// 실제 발주서(엑셀/PDF) 생성은 이 웹앱이 아니라 채팅으로 요청(purchase-order-generator 스킬)해서 받는다 —
+// 정적 프론트엔드(서버 없음) 구조상 브라우저에서 직접 문서를 생성할 수 없어, 이 패널은 생성 "전" 점검용.
+function VendorPrepPanel({ summary }) {
+  const { unassignedCount, looseCount, totalCount, assigned } = summary;
+  if (totalCount === 0) return null;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2 text-slate-500">
+          <Table2 size={18} />
+          <span className="text-sm font-medium tracking-wide">발주 준비 상태</span>
+        </div>
+        <span className="text-xs text-slate-400">품목 {totalCount}건 · 업체 {assigned.length}곳</span>
+      </div>
+
+      {(unassignedCount > 0 || looseCount > 0) && (
+        <div className="flex flex-wrap gap-2 mb-4">
+          {unassignedCount > 0 && (
+            <span className="text-xs bg-rose-50 text-rose-700 border border-rose-200 rounded-md px-2.5 py-1">
+              업체 미배정 {unassignedCount}건 — 발주서 생성 시 제외됩니다
+            </span>
+          )}
+          {looseCount > 0 && (
+            <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-md px-2.5 py-1">
+              집행단가 미확정(예산단가만 있음) {looseCount}건 — "가단가"로 표시됩니다
+            </span>
+          )}
+        </div>
+      )}
+
+      {assigned.length > 0 ? (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-1.5 font-normal">업체</th>
+              <th className="py-1.5 font-normal text-right">품목수</th>
+              <th className="py-1.5 font-normal text-right">예산금액</th>
+              <th className="py-1.5 font-normal text-right">집행금액</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assigned.map((g) => (
+              <tr key={g.vendorId} className="border-b border-slate-100">
+                <td className="py-1.5">{g.name}</td>
+                <td className="py-1.5 text-right text-slate-500">{g.count}</td>
+                <td className="py-1.5 text-right">{g.budgetTotal.toLocaleString("ko-KR")}원</td>
+                <td className="py-1.5 text-right font-medium text-teal-700">{g.actualTotal.toLocaleString("ko-KR")}원</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="text-xs text-slate-400">아직 업체가 배정된 품목이 없습니다. 품목 표의 "업체" 칸에서 배정하세요.</p>
+      )}
+
+      <p className="text-[11px] text-slate-400 mt-3">
+        실제 발주서(엑셀·PDF)는 이 화면이 아니라 Claude에게 "{"{프로젝트명}"} 발주서 만들어줘"라고 요청해서 받습니다.
+      </p>
+    </div>
+  );
+}
+
+
 export default function App() {
   const [projectName, setProjectName] = useState("");
   const [tier, setTier] = useState(TIERS[2]);
@@ -453,11 +518,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (activeTab === "vendors" && !vendorsLoaded) {
+    // 업체 목록은 전역 공통 데이터라 발주 관리 탭(품목별 업체선택 드롭다운)에서도 필요 —
+    // "업체 관리" 탭을 열 때뿐 아니라 앱 시작 시 한 번 로드해둔다.
+    if (!vendorsLoaded) {
       reloadVendors();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, []);
 
   async function handleAddVendor(name) {
     setVendorsError("");
@@ -736,7 +803,7 @@ export default function App() {
     }
   }
   function updateFfeItem(roomTypeId, itemId, field, value) {
-    const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory"];
+    const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory", "vendorId"];
     setFfeItems((prev) => ({
       ...prev,
       [roomTypeId]: (prev[roomTypeId] || []).map((it) =>
@@ -774,7 +841,7 @@ export default function App() {
     setOseItems((prev) => [...prev, ...parsed]);
   }
   function updateOseItem(itemId, field, value) {
-    const stringFields = ["name", "categoryGroup", "subCategory"];
+    const stringFields = ["name", "categoryGroup", "subCategory", "vendorId"];
     setOseItems((prev) =>
       prev.map((it) =>
         it.id === itemId
@@ -1698,6 +1765,45 @@ export default function App() {
     const cat = rt.category.slice(0, 2);
     return `${cat}-${bed}-${bath}`;
   }
+
+  // 발주 준비 상태 — 업체별 품목수/금액 집계, 미배정·가단가 품목 카운트
+  // (발주서는 vendor_id 기준으로 업체별 그룹핑되므로, 생성 전에 여기서 누락을 미리 확인)
+  const vendorPrepSummary = useMemo(() => {
+    const groups = new Map(); // vendorId("" = 미배정) -> { vendorId, name, count, budgetTotal, actualTotal }
+    let looseCount = 0; // 집행단가 없이 예산단가만 있는 품목(발주서엔 "가단가"로 표시됨)
+
+    function addItem(it, qty) {
+      const budgetAmt = ((it.unitPrice || 0) + (it.installUnitPrice || 0)) * qty;
+      const actualAmt = ((it.actualUnitPrice || 0) + (it.installActualUnitPrice || 0)) * qty;
+      if (!it.actualUnitPrice && it.unitPrice) looseCount++;
+      const key = it.vendorId || "";
+      if (!groups.has(key)) {
+        const vendor = vendors.find((v) => v.id === key);
+        groups.set(key, { vendorId: key, name: key ? vendor?.name || "(삭제된 업체)" : "미배정", count: 0, budgetTotal: 0, actualTotal: 0 });
+      }
+      const g = groups.get(key);
+      g.count += 1;
+      g.budgetTotal += budgetAmt;
+      g.actualTotal += actualAmt;
+    }
+
+    roomTypes.forEach((rt) => {
+      (ffeItems[rt.id] || []).forEach((it) => addItem(it, ffeItemQty(it, rt)));
+    });
+    oseItems.forEach((it) => addItem(it, oseItemQty(it)));
+
+    const unassigned = groups.get("");
+    const assigned = Array.from(groups.values())
+      .filter((g) => g.vendorId)
+      .sort((a, b) => b.actualTotal - a.actualTotal || b.budgetTotal - a.budgetTotal);
+
+    return {
+      unassignedCount: unassigned?.count || 0,
+      looseCount,
+      totalCount: Array.from(groups.values()).reduce((s, g) => s + g.count, 0),
+      assigned,
+    };
+  }, [ffeItems, oseItems, roomTypes, vendors]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
@@ -2731,6 +2837,9 @@ export default function App() {
           </div>
         )}
 
+        {/* 발주 준비 상태 — 업체별 집계, 실제 발주서는 채팅으로 요청해서 받음 */}
+        <VendorPrepPanel summary={vendorPrepSummary} />
+
         {/* FF&E 발주 품목 (룸타입별) */}
         {roomTypes.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-xl p-6">
@@ -2955,6 +3064,7 @@ export default function App() {
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                             <th className="py-1.5 font-normal">품목명</th>
                             <th className="py-1.5 font-normal" title="회계 대분류 — 룸타입 카드 안에 있어도 실제로는 OS&E(린넨/타올 등)일 수 있음">구분</th>
+                            <th className="py-1.5 font-normal" title="이 품목을 발주할 업체 — 발주서 생성 시 업체별로 그룹핑됨">업체</th>
                             <th className="py-1.5 font-normal text-right">공급예산단가</th>
                             <th className="py-1.5 font-normal text-right">공급집행단가</th>
                             <th className="py-1.5 font-normal text-right">설치예산단가</th>
@@ -2992,6 +3102,19 @@ export default function App() {
                                   <option value="">미지정</option>
                                   <option value="FF&E">FF&E</option>
                                   <option value="OS&E">OS&E</option>
+                                </select>
+                              </td>
+                              <td className="py-1.5">
+                                <select
+                                  value={it.vendorId || ""}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "vendorId", e.target.value)}
+                                  title="발주 업체"
+                                  className="text-xs border border-slate-200 rounded-md px-1.5 py-1 text-slate-600 max-w-[7rem]"
+                                >
+                                  <option value="">미배정</option>
+                                  {vendors.map((v) => (
+                                    <option key={v.id} value={v.id}>{v.name}</option>
+                                  ))}
                                 </select>
                               </td>
                               <td className="py-1.5">
@@ -3205,6 +3328,7 @@ export default function App() {
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-1.5 font-normal">품목명</th>
                   <th className="py-1.5 font-normal" title="회계 대분류 — '공통 품목' 카드에 있어도 실제로는 FF&E일 수 있음(예: 드라이기)">구분</th>
+                  <th className="py-1.5 font-normal" title="이 품목을 발주할 업체 — 발주서 생성 시 업체별로 그룹핑됨">업체</th>
                   <th className="py-1.5 font-normal text-right">공급예산단가</th>
                   <th className="py-1.5 font-normal text-right">공급집행단가</th>
                   <th className="py-1.5 font-normal text-right">설치예산단가</th>
@@ -3241,6 +3365,19 @@ export default function App() {
                         <option value="">미지정</option>
                         <option value="FF&E">FF&E</option>
                         <option value="OS&E">OS&E</option>
+                      </select>
+                    </td>
+                    <td className="py-1.5">
+                      <select
+                        value={it.vendorId || ""}
+                        onChange={(e) => updateOseItem(it.id, "vendorId", e.target.value)}
+                        title="발주 업체"
+                        className="text-xs border border-slate-200 rounded-md px-1.5 py-1 text-slate-600 max-w-[7rem]"
+                      >
+                        <option value="">미배정</option>
+                        {vendors.map((v) => (
+                          <option key={v.id} value={v.id}>{v.name}</option>
+                        ))}
                       </select>
                     </td>
                     <td className="py-1.5">
