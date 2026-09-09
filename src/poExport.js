@@ -20,8 +20,10 @@ const WHITE = "FFFFFFFF";
 const GREY = "FF808080";
 
 // 페이지 분리 휴리스틱 (generate_po.py와 동일 상수 — 실제 인쇄 보고 튜닝)
-const ROWS_PER_PAGE = 47;
-const SUMMARY_BLOCK_ROWS = 13;
+const ROWS_PER_PAGE = 60;         // A4 세로·너비맞춤 축소 포함 실측치(2026-09-09, 기본 행높이 기준)
+const SUMMARY_BLOCK_ROWS = 11;      // 합계3줄 + 발주조건(제목+4줄) + 사이 여백
+const SUMMARY_MIN_GAP = 2;          // 품목 표와 합계 블록 사이 최소 빈 줄
+const SUMMARY_BOTTOM_MARGIN = 3;    // 페이지 맨 아래에서 띄울 줄 수 (합계가 다음 장으로 밀리면 키울 것)
 
 export const COMPANY_NAME = "(주)스페이스플래닝";
 const LOGO_URL = `${import.meta.env.BASE_URL}po_logo.png`; // public/po_logo.png (SPACE PLANNING 로고, 약 7.5:1)
@@ -197,12 +199,18 @@ export async function buildPoXlsx({
   });
   const lastItemRow = row - 1;
 
-  // 합계 블록이 현재 페이지에 안 들어가면 다음 페이지로 넘김
-  if (remainingRowsOnPage(lastItemRow) < SUMMARY_BLOCK_ROWS) {
+  // 합계 블록 위치: 현재 페이지에 들어가면 페이지 "하단"에 붙이고(품목 표와 합계 사이가 비어도 됨),
+  // 안 들어가면 다음 페이지로 넘겨 위쪽에 둔다. 페이지 높이 추정은 ROWS_PER_PAGE 휴리스틱이라
+  // 실제 인쇄에서 합계가 다음 장으로 밀리면 SUMMARY_BOTTOM_MARGIN을 키우면 된다.
+  const remaining = remainingRowsOnPage(lastItemRow);
+  const blockRows = SUMMARY_BLOCK_ROWS + (remark ? 2 : 0);
+  if (remaining < blockRows + SUMMARY_MIN_GAP) {
     ws.getRow(lastItemRow).addPageBreak();
+    r = lastItemRow + 1 + SUMMARY_MIN_GAP;
+  } else {
+    r = lastItemRow + 1 + Math.max(SUMMARY_MIN_GAP, remaining - blockRows - SUMMARY_BOTTOM_MARGIN);
   }
 
-  r = lastItemRow + 2;
   if (remark) {
     ws.mergeCells(`A${r}:I${r}`);
     ws.getCell(`A${r}`).value = `비고: ${remark}`;

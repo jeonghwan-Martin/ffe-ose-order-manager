@@ -381,9 +381,14 @@ function VendorManagement({ vendors, loading, error, onReload, onAdd, onFieldCha
 
 // 발주 준비 상태 패널 — 업체별 품목/금액 집계 + 미배정·가단가 경고 + 발주서 생성 버튼.
 // 발주서(엑셀)는 브라우저에서 직접 생성(poExport.js, ExcelJS)해 내려받고, PDF는 사용자가 엑셀에서 변환한다.
-function VendorPrepPanel({ summary, onGenerate }) {
+function VendorPrepPanel({ summary, onGenerate, subCategories, vendors, onBulkAssign }) {
   const { unassignedCount, looseCount, totalCount, assigned } = summary;
+  const [bulkCat, setBulkCat] = useState("");
+  const [bulkVendor, setBulkVendor] = useState("");
+  const [bulkOnlyUnassigned, setBulkOnlyUnassigned] = useState(true);
   if (totalCount === 0) return null;
+  const bulkTarget = subCategories.find((c) => c.key === bulkCat);
+  const bulkCount = bulkTarget ? (bulkOnlyUnassigned ? bulkTarget.unassigned : bulkTarget.total) : 0;
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-6">
@@ -419,6 +424,46 @@ function VendorPrepPanel({ summary, onGenerate }) {
           )}
         </div>
       )}
+
+      {/* 세부분류 단위 업체 일괄 지정 — 린넨류 전체를 한 업체로, 어메니티 전체를 한 업체로 등 */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+        <span className="text-xs text-slate-500 mr-1">분류별 일괄 지정</span>
+        <select
+          value={bulkCat}
+          onChange={(e) => setBulkCat(e.target.value)}
+          className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white"
+        >
+          <option value="">분류 선택</option>
+          {subCategories.map((c) => (
+            <option key={c.key} value={c.key}>
+              {c.label} ({c.unassigned}/{c.total} 미배정)
+            </option>
+          ))}
+        </select>
+        <span className="text-slate-400 text-xs">→</span>
+        <select
+          value={bulkVendor}
+          onChange={(e) => setBulkVendor(e.target.value)}
+          className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white max-w-[10rem]"
+        >
+          <option value="">업체 선택</option>
+          {vendors.map((v) => (
+            <option key={v.id} value={v.id}>{v.name}{v.itemGroup ? ` · ${v.itemGroup}` : ""}</option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer">
+          <input type="checkbox" checked={bulkOnlyUnassigned} onChange={(e) => setBulkOnlyUnassigned(e.target.checked)} />
+          미배정만
+        </label>
+        <button
+          onClick={() => { onBulkAssign(bulkCat, bulkVendor, bulkOnlyUnassigned); setBulkCat(""); setBulkVendor(""); }}
+          disabled={!bulkCat || !bulkVendor || bulkCount === 0}
+          className="text-xs bg-white border border-slate-300 rounded-md px-3 py-1.5 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {bulkCount > 0 ? `${bulkCount}건 적용` : "적용"}
+        </button>
+        <span className="text-[11px] text-slate-400 basis-full">모든 룸타입 카드와 공통 품목 카드에 한 번에 적용됩니다. 적용 후 "저장"을 눌러야 서버에 반영돼요.</span>
+      </div>
 
       {assigned.length > 0 ? (
         <table className="w-full text-sm">
@@ -1930,6 +1975,36 @@ export default function App() {
     };
   }, [ffeItems, oseItems, roomTypes, vendors]);
 
+  // 세부분류(subCategory: 카탈로그 category_group — 객실 비품/린넨류/타올류/매트리스/기기류/청소용품/컨텐츠)별 품목수·미배정수
+  // 카탈로그 없이 직접 추가한 품목은 subCategory가 없으므로 "기타"로 묶는다.
+  const subCategorySummary = useMemo(() => {
+    const map = new Map();
+    function add(it) {
+      const key = it.subCategory || "기타";
+      if (!map.has(key)) map.set(key, { key, label: key, total: 0, unassigned: 0 });
+      const c = map.get(key);
+      c.total += 1;
+      if (!it.vendorId) c.unassigned += 1;
+    }
+    Object.values(ffeItems).forEach((items) => items.forEach(add));
+    oseItems.forEach(add);
+    return Array.from(map.values()).sort((a, b) => b.unassigned - a.unassigned || a.label.localeCompare(b.label, "ko"));
+  }, [ffeItems, oseItems]);
+
+  // 세부분류 단위 업체 일괄 지정 — 모든 룸타입 카드 + 공통 품목 카드에 동시에 적용
+  function assignVendorBySubCategory(subCatKey, vendorId, onlyUnassigned) {
+    if (!subCatKey || !vendorId) return;
+    const match = (it) => (it.subCategory || "기타") === subCatKey && (!onlyUnassigned || !it.vendorId);
+    setFfeItems((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([rtId, items]) => {
+        next[rtId] = items.map((it) => (match(it) ? { ...it, vendorId } : it));
+      });
+      return next;
+    });
+    setOseItems((prev) => prev.map((it) => (match(it) ? { ...it, vendorId } : it)));
+  }
+
   // 발주서 생성 — 업체별로 품목을 모아 엑셀(ExcelJS) 생성·다운로드.
   // 단가: 집행단가 우선, 없으면 예산단가를 쓰고 비고에 "가단가 · 미확정" 표시. 수량: 화면의 필요수량(카톤 올림 포함) 그대로.
   // 공무팀 소관(orderOwner === "공무팀") 품목은 제외 — 미지정(null)은 오픈바이징팀으로 간주.
@@ -3002,7 +3077,13 @@ export default function App() {
         )}
 
         {/* 발주 준비 상태 — 업체별 집계 + 발주서 엑셀 생성 */}
-        <VendorPrepPanel summary={vendorPrepSummary} onGenerate={() => setPoModalOpen(true)} />
+        <VendorPrepPanel
+          summary={vendorPrepSummary}
+          onGenerate={() => setPoModalOpen(true)}
+          subCategories={subCategorySummary}
+          vendors={vendors}
+          onBulkAssign={assignVendorBySubCategory}
+        />
         <PoModal
           open={poModalOpen}
           onClose={() => setPoModalOpen(false)}
