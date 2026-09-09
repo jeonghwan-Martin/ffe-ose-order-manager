@@ -901,9 +901,21 @@ export default function App() {
   const [presetPickerFor, setPresetPickerFor] = useState(null);
   const [presetPickerItems, setPresetPickerItems] = useState([]);
   const [presetPickerSelectedCats, setPresetPickerSelectedCats] = useState(new Set());
+  // 선택 품목(is_optional: 매트리스 브랜드/직원용/가운/핸드타올 등)은 카테고리 체크와 별개로 개별 체크해서만 추가 — 기본 미선택
+  const [presetPickerSelectedOptional, setPresetPickerSelectedOptional] = useState(new Set());
+  const presetPickerOptionalItems = useMemo(() => presetPickerItems.filter((p) => p.isOptional), [presetPickerItems]);
+  function togglePresetPickerOptional(key) {
+    setPresetPickerSelectedOptional((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+  const optionalKey = (p) => `${p.catalogItemId || p.name}|${p.mattressSize || ""}`;
   const presetPickerCatCounts = useMemo(() => {
     const map = new Map();
     presetPickerItems.forEach((p) => {
+      if (p.isOptional) return; // 선택 품목은 카테고리 카운트에서 제외(별도 목록)
       const cat = p.subCategory || "기타";
       map.set(cat, (map.get(cat) || 0) + 1);
     });
@@ -919,6 +931,7 @@ export default function App() {
   function cancelPresetPicker() {
     setPresetPickerFor(null);
     setPresetPickerItems([]);
+    setPresetPickerSelectedOptional(new Set());
   }
   function presetItemsToObjects(presets) {
     return presets.map((p) => ({
@@ -942,7 +955,7 @@ export default function App() {
   }
   function confirmPresetPicker() {
     const chosen = presetPickerItems.filter((p) =>
-      presetPickerSelectedCats.has(p.subCategory || "기타")
+      p.isOptional ? presetPickerSelectedOptional.has(optionalKey(p)) : presetPickerSelectedCats.has(p.subCategory || "기타")
     );
     const newItems = presetItemsToObjects(chosen);
     if (presetPickerFor === "OSE") {
@@ -961,7 +974,8 @@ export default function App() {
     try {
       const presets = await fetchContentPresets(rt.category);
       setPresetPickerItems(presets);
-      setPresetPickerSelectedCats(new Set(presets.map((p) => p.subCategory || "기타")));
+      setPresetPickerSelectedCats(new Set(presets.filter((p) => !p.isOptional).map((p) => p.subCategory || "기타")));
+      setPresetPickerSelectedOptional(new Set());
       setPresetPickerFor(rt.id);
     } catch (err) {
       setPresetError(`기본세트를 불러오지 못했어요: ${err.message}`);
@@ -1030,7 +1044,8 @@ export default function App() {
     try {
       const presets = await fetchOseContentPresets();
       setPresetPickerItems(presets);
-      setPresetPickerSelectedCats(new Set(presets.map((p) => p.subCategory || "기타")));
+      setPresetPickerSelectedCats(new Set(presets.filter((p) => !p.isOptional).map((p) => p.subCategory || "기타")));
+      setPresetPickerSelectedOptional(new Set());
       setPresetPickerFor("OSE");
     } catch (err) {
       setOsePresetError(`기본세트를 불러오지 못했어요: ${err.message}`);
@@ -1293,6 +1308,10 @@ export default function App() {
     const mult = it.multiplier != null && it.multiplier !== "" ? Number(it.multiplier) : 1;
     const base = Number(it.qtyPerRoom) || 0;
     let raw;
+    if (it.calcBasis === "project") {
+      // 현장당 고정 수량 — 룸타입 카드에 들어올 일은 없지만(조회 단계에서 제외) 방어적으로 처리
+      return roundToCarton(base * mult, it.cartonSize);
+    }
     if (it.calcBasis === "capacity") {
       raw = base * mult * (rt.capacity || 1) * roomCount;
     } else if (it.calcBasis === "bed") {
@@ -1308,6 +1327,8 @@ export default function App() {
   }
   // OS&E 공통 리스트 품목의 필요수량 — 프로젝트 전체 객실수(grandTotal) 비례, 카톤 단위 올림 동일 적용
   function oseItemQty(it) {
+    // project 기준(커피머신/정수기/복합기 등 현장당 고정 수량)은 객실수를 곱하지 않는다
+    if (it.calcBasis === "project") return roundToCarton(Number(it.qtyPerRoom) || 0, it.cartonSize);
     return roundToCarton(it.qtyPerRoom * grandTotal, it.cartonSize);
   }
 
@@ -3269,6 +3290,22 @@ export default function App() {
                             </label>
                           ))}
                         </div>
+                        {presetPickerOptionalItems.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-[11px] text-slate-500 mb-1.5">선택 품목 — 기본 미포함, 필요한 것만 체크 (매트리스는 브랜드 하나만 고르세요)</p>
+                            <div className="flex flex-wrap gap-2">
+                              {presetPickerOptionalItems.map((p) => {
+                                const key = optionalKey(p);
+                                return (
+                                  <label key={key} className="flex items-center gap-1.5 text-xs bg-white border border-dashed border-slate-300 rounded-md px-2 py-1 cursor-pointer">
+                                    <input type="checkbox" checked={presetPickerSelectedOptional.has(key)} onChange={() => togglePresetPickerOptional(key)} />
+                                    {p.name}{p.mattressSize ? ` (${p.mattressSize})` : ""}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                         <div className="flex justify-end gap-2">
                           <button
                             onClick={cancelPresetPicker}
@@ -3278,10 +3315,10 @@ export default function App() {
                           </button>
                           <button
                             onClick={confirmPresetPicker}
-                            disabled={presetPickerSelectedCats.size === 0}
+                            disabled={presetPickerSelectedCats.size === 0 && presetPickerSelectedOptional.size === 0}
                             className="text-xs bg-amber-700 text-white px-3 py-1 rounded-md hover:bg-amber-800 disabled:opacity-50"
                           >
-                            선택한 카테고리 불러오기
+                            선택한 품목 불러오기
                           </button>
                         </div>
                       </div>
@@ -3551,6 +3588,22 @@ export default function App() {
                   </label>
                 ))}
               </div>
+              {presetPickerOptionalItems.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-[11px] text-slate-500 mb-1.5">선택 품목 — 기본 미포함, 필요한 것만 체크 (매트리스는 브랜드 하나만 고르세요)</p>
+                  <div className="flex flex-wrap gap-2">
+                    {presetPickerOptionalItems.map((p) => {
+                      const key = optionalKey(p);
+                      return (
+                        <label key={key} className="flex items-center gap-1.5 text-xs bg-white border border-dashed border-slate-300 rounded-md px-2 py-1 cursor-pointer">
+                          <input type="checkbox" checked={presetPickerSelectedOptional.has(key)} onChange={() => togglePresetPickerOptional(key)} />
+                          {p.name}{p.mattressSize ? ` (${p.mattressSize})` : ""}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="flex justify-end gap-2">
                 <button
                   onClick={cancelPresetPicker}
@@ -3560,10 +3613,10 @@ export default function App() {
                 </button>
                 <button
                   onClick={confirmPresetPicker}
-                  disabled={presetPickerSelectedCats.size === 0}
+                  disabled={presetPickerSelectedCats.size === 0 && presetPickerSelectedOptional.size === 0}
                   className="text-xs bg-amber-700 text-white px-3 py-1 rounded-md hover:bg-amber-800 disabled:opacity-50"
                 >
-                  선택한 카테고리 불러오기
+                  선택한 품목 불러오기
                 </button>
               </div>
             </div>
@@ -3720,6 +3773,9 @@ export default function App() {
                       {oseItemQty(it).toLocaleString("ko-KR")}
                       {it.cartonSize ? (
                         <span className="text-[10px] text-amber-600 block">카톤×{it.cartonSize}</span>
+                      ) : null}
+                      {it.calcBasis === "project" ? (
+                        <span className="text-[10px] text-sky-600 block" title="현장당 고정 수량 — 객실수를 곱하지 않음">현장 고정</span>
                       ) : null}
                     </td>
                     <td className="py-1.5 text-right font-medium">

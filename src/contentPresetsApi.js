@@ -35,12 +35,14 @@ export async function fetchContentPresets(category) {
     categoryRows = await catRes.json();
   }
 
-  const rows = [...common, ...categoryRows];
+  // project 기준(현장당 고정 수량: 커피머신/정수기/복합기 등)은 룸타입 카드 대상이 아님 — 공통 품목(OS&E) 카드에서만 불러온다
+  const rows = [...common, ...categoryRows].filter((row) => (row.catalog_items?.calc_basis || "room") !== "project");
   return rows.map((row) => {
     const ci = row.catalog_items || {};
     return {
       name: row.item_name ?? ci.item_name ?? "",
       catalogItemId: row.catalog_item_id ?? null,
+      isOptional: !!row.is_optional, // 선택 품목 — 피커에서 기본 미선택
       unitPrice: Number(ci.reference_supply_price) || 0,
       calcBasis: ci.calc_basis || "room",
       qtyPerRoom: Number(row.default_qty) || 0,
@@ -67,14 +69,17 @@ export async function fetchOseContentPresets() {
   );
   if (!res.ok) throw new Error(`content_presets(OS&E) 조회 실패 (${res.status})`);
   const rows = await res.json();
+  // room(룸당×객실수) + project(현장당 고정 수량) 두 축을 가져온다. capacity/bed는 룸타입 카드 전용.
   return rows
-    .filter((row) => (row.catalog_items?.calc_basis || "room") === "room")
+    .filter((row) => ["room", "project"].includes(row.catalog_items?.calc_basis || "room"))
     .map((row) => {
       const ci = row.catalog_items || {};
       const mult = row.default_multiplier != null ? Number(row.default_multiplier) : 1;
       return {
         name: row.item_name ?? ci.item_name ?? "",
         catalogItemId: row.catalog_item_id ?? null,
+        isOptional: !!row.is_optional,
+        calcBasis: ci.calc_basis || "room", // "project"면 qtyPerRoom을 객실수에 곱하지 않고 그대로 발주수량으로 씀
         unitPrice: Number(ci.reference_supply_price) || 0,
         qtyPerRoom: (Number(row.default_qty) || 0) * mult,
         categoryGroup: ci.accounting_group ?? null,
