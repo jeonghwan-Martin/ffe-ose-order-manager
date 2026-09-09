@@ -12,8 +12,9 @@ const sbHeaders = {
 };
 
 // App.jsx 로컬 상태 -> settings jsonb 페이로드
-function toSettings({ categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset }) {
-  return { categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset };
+function toSettings({ categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact }) {
+  // poContact: { name, phone } — 발주서 [발주처] 담당자 기본값 (프로젝트별 저장)
+  return { categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact };
 }
 
 // projectUuid: projectIdApi.resolveProjectUuid()로 확보한 Supabase projects.id(uuid)

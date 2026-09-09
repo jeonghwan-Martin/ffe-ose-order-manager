@@ -35,6 +35,9 @@ function toRow(it, { projectId, roomTypeId }) {
     applied_multiplier: it.multiplier != null ? it.multiplier : null,
     base_calc_basis: it.calcBasis ?? null,
     mattress_size: it.mattressSize ?? null,
+    vendor_id: it.vendorId || null, // 발주 업체(FK) — 발주서 생성 시 업체별 그룹핑 기준
+    brand: it.brand || null, // 브랜드/제조사 — 발주서 열용, 수동 입력
+    spec: it.spec || null, // 규격 — 카탈로그 default_spec에서 초기값, 수정 가능
   };
 }
 
@@ -55,6 +58,9 @@ function fromRow(row) {
     multiplier: row.applied_multiplier != null ? Number(row.applied_multiplier) : 1,
     calcBasis: row.base_calc_basis || "room",
     mattressSize: row.mattress_size,
+    vendorId: row.vendor_id || "",
+    brand: row.brand || "",
+    spec: row.spec || "",
   };
 }
 

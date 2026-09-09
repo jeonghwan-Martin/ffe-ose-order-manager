@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard, ChevronDown, ChevronRight, FileDown } from "lucide-react";
 import {
   Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -14,6 +14,7 @@ import { resolveProjectUuid } from "./projectIdApi";
 import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
 import { fetchContentPresets, fetchOseContentPresets } from "./contentPresetsApi";
 import { loadVendors, createVendor, updateVendor, deleteVendor } from "./vendorsApi";
+import { exportPurchaseOrders, COMPANY_NAME } from "./poExport";
 import TestScheduleDashboard from "./TestScheduleDashboard";
 
 const TIERS = ["Flagship", "Premium", "Upper Select", "Select", "Essential"];
@@ -378,10 +379,9 @@ function VendorManagement({ vendors, loading, error, onReload, onAdd, onFieldCha
 }
 
 
-// 발주 준비 상태 패널 — 업체별 품목/금액 집계 + 미배정·가단가 경고.
-// 실제 발주서(엑셀/PDF) 생성은 이 웹앱이 아니라 채팅으로 요청(purchase-order-generator 스킬)해서 받는다 —
-// 정적 프론트엔드(서버 없음) 구조상 브라우저에서 직접 문서를 생성할 수 없어, 이 패널은 생성 "전" 점검용.
-function VendorPrepPanel({ summary }) {
+// 발주 준비 상태 패널 — 업체별 품목/금액 집계 + 미배정·가단가 경고 + 발주서 생성 버튼.
+// 발주서(엑셀)는 브라우저에서 직접 생성(poExport.js, ExcelJS)해 내려받고, PDF는 사용자가 엑셀에서 변환한다.
+function VendorPrepPanel({ summary, onGenerate }) {
   const { unassignedCount, looseCount, totalCount, assigned } = summary;
   if (totalCount === 0) return null;
 
@@ -392,7 +392,17 @@ function VendorPrepPanel({ summary }) {
           <Table2 size={18} />
           <span className="text-sm font-medium tracking-wide">발주 준비 상태</span>
         </div>
-        <span className="text-xs text-slate-400">품목 {totalCount}건 · 업체 {assigned.length}곳</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400">품목 {totalCount}건 · 업체 {assigned.length}곳</span>
+          <button
+            onClick={onGenerate}
+            disabled={assigned.length === 0}
+            className="flex items-center gap-1.5 text-xs bg-slate-800 text-white rounded-md px-3 py-1.5 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="업체별 발주서 엑셀 생성 (업체가 여러 곳이면 ZIP)"
+          >
+            <FileDown size={14} /> 발주서 생성
+          </button>
+        </div>
       </div>
 
       {(unassignedCount > 0 || looseCount > 0) && (
@@ -436,8 +446,115 @@ function VendorPrepPanel({ summary }) {
       )}
 
       <p className="text-[11px] text-slate-400 mt-3">
-        실제 발주서(엑셀·PDF)는 이 화면이 아니라 Claude에게 "{"{프로젝트명}"} 발주서 만들어줘"라고 요청해서 받습니다.
+        "발주서 생성"을 누르면 업체별 엑셀이 내려받아집니다. PDF가 필요하면 엑셀에서 열어 [파일 → PDF로 저장]하세요 (A4·너비 맞춤 설정은 파일에 들어 있습니다).
       </p>
+    </div>
+  );
+}
+
+
+// 발주서 생성 모달 — 발주일자/납품요청일/발주처 담당자 입력 후 업체별 엑셀 생성
+function PoModal({ open, onClose, onSubmit, assigned, unassignedCount, initialContact, projectName }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [orderDate, setOrderDate] = useState(today);
+  const [deliveryDate, setDeliveryDate] = useState("");
+  const [contactName, setContactName] = useState(initialContact?.name || "");
+  const [contactPhone, setContactPhone] = useState(initialContact?.phone || "");
+  const [selected, setSelected] = useState(() => new Set(assigned.map((g) => g.vendorId)));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setOrderDate(new Date().toISOString().slice(0, 10));
+    setContactName(initialContact?.name || "");
+    setContactPhone(initialContact?.phone || "");
+    setSelected(new Set(assigned.map((g) => g.vendorId)));
+    setError("");
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!open) return null;
+
+  function toggle(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function submit() {
+    if (!deliveryDate) return setError("납품요청일을 입력해주세요.");
+    if (!contactName.trim()) return setError("발주처 담당자명을 입력해주세요.");
+    if (selected.size === 0) return setError("발주서를 만들 업체를 하나 이상 선택해주세요.");
+    setBusy(true);
+    setError("");
+    try {
+      await onSubmit({ orderDate, deliveryDate, contact: { name: contactName.trim(), phone: contactPhone.trim() }, vendorIds: Array.from(selected) });
+      onClose();
+    } catch (err) {
+      setError(`발주서 생성에 실패했어요: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-slate-800">발주서 생성 — {projectName}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <label className="text-xs text-slate-500">발주일자
+            <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)}
+              className="mt-1 w-full border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+          <label className="text-xs text-slate-500">납품요청일
+            <input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)}
+              className="mt-1 w-full border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+          <label className="text-xs text-slate-500">발주처 담당자
+            <input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="이름"
+              className="mt-1 w-full border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+          <label className="text-xs text-slate-500">담당자 연락처
+            <input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="010-0000-0000"
+              className="mt-1 w-full border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          </label>
+        </div>
+        <p className="text-[11px] text-slate-400 -mt-2 mb-4">담당자 정보는 이 프로젝트 설정에 저장되어 다음 생성 때 기본값으로 나옵니다 (저장 버튼을 눌러야 서버에 반영).</p>
+
+        <div className="mb-4">
+          <div className="text-xs text-slate-500 mb-1.5">생성할 업체 ({selected.size}/{assigned.length})</div>
+          <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100">
+            {assigned.map((g) => (
+              <label key={g.vendorId} className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-slate-50">
+                <input type="checkbox" checked={selected.has(g.vendorId)} onChange={() => toggle(g.vendorId)} />
+                <span className="flex-1">{g.name}</span>
+                <span className="text-xs text-slate-400">{g.count}건 · {g.actualTotal.toLocaleString("ko-KR")}원</span>
+              </label>
+            ))}
+          </div>
+          {unassignedCount > 0 && (
+            <p className="text-[11px] text-rose-600 mt-1.5">업체 미배정 {unassignedCount}건은 제외됩니다.</p>
+          )}
+        </div>
+
+        {error && <p className="text-xs text-rose-600 mb-3">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-1.5 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50">취소</button>
+          <button onClick={submit} disabled={busy}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+            {selected.size > 1 ? "ZIP 다운로드" : "엑셀 다운로드"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -658,6 +775,9 @@ export default function App() {
   const [pasteOpenFor, setPasteOpenFor] = useState(null); // roomTypeId | "OSE" | null
   const [pasteText, setPasteText] = useState("");
   const [copySourceFor, setCopySourceFor] = useState({}); // { [roomTypeId]: sourceRoomTypeId }
+  // 발주서 [발주처] 담당자 기본값 — projects.settings.poContact 에 프로젝트별 저장
+  const [poContact, setPoContact] = useState({ name: "", phone: "" });
+  const [poModalOpen, setPoModalOpen] = useState(false);
   const [basicPreset, setBasicPreset] = useState(
     DEFAULT_BASIC_PRESET.map((name) => ({ id: nextId(), name }))
   );
@@ -771,6 +891,8 @@ export default function App() {
       categoryGroup: p.categoryGroup, // 'FF&E' | 'OS&E' — 카탈로그 실제 회계분류, 카드 위치와 무관
       subCategory: p.subCategory, // 세부 품목군(객실비품/린넨류/타올류/매트리스/기기류)
       cartonSize: p.cartonSize, // 박스/팩당 개수(카탈로그 값) — 있으면 필요수량을 이 배수로 올림해서 발주수량 산출
+      spec: p.spec || "", // 규격(카탈로그 default_spec) — 발주서 규격 열, 수정 가능
+      brand: "", // 브랜드/제조사 — 카탈로그에 없어 수동 입력
     }));
   }
   function confirmPresetPicker() {
@@ -803,7 +925,7 @@ export default function App() {
     }
   }
   function updateFfeItem(roomTypeId, itemId, field, value) {
-    const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory", "vendorId"];
+    const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory", "vendorId", "brand", "spec"];
     setFfeItems((prev) => ({
       ...prev,
       [roomTypeId]: (prev[roomTypeId] || []).map((it) =>
@@ -841,7 +963,7 @@ export default function App() {
     setOseItems((prev) => [...prev, ...parsed]);
   }
   function updateOseItem(itemId, field, value) {
-    const stringFields = ["name", "categoryGroup", "subCategory", "vendorId"];
+    const stringFields = ["name", "categoryGroup", "subCategory", "vendorId", "brand", "spec"];
     setOseItems((prev) =>
       prev.map((it) =>
         it.id === itemId
@@ -1193,6 +1315,7 @@ export default function App() {
     setLaborExpenses([]);
     setExtraExpenses([]);
     setBasicPreset(DEFAULT_BASIC_PRESET.map((name) => ({ id: nextId(), name })));
+    setPoContact({ name: "", phone: "" });
     setLastSaved(null);
   }
 
@@ -1215,6 +1338,7 @@ export default function App() {
     if (data.laborExpenses) setLaborExpenses(data.laborExpenses);
     if (data.extraExpenses) setExtraExpenses(data.extraExpenses);
     if (data.basicPreset) setBasicPreset(data.basicPreset);
+    if (data.poContact) setPoContact({ name: data.poContact.name || "", phone: data.poContact.phone || "" });
     if (data.savedAt) setLastSaved(data.savedAt);
     idCounter = Math.max(idCounter, maxIdIn(data) + 1);
   }
@@ -1359,6 +1483,7 @@ export default function App() {
       laborExpenses,
       extraExpenses,
       basicPreset,
+      poContact,
       savedAt: new Date().toISOString(),
       ...overrides,
     };
@@ -1384,7 +1509,7 @@ export default function App() {
         await saveOrderItems(projectUuid, ffeItems, oseItems, roomTypeIdMap);
         await saveExpenses(projectUuid, { siteExpenses, laborExpenses, extraExpenses });
         await saveProjectSettings(projectUuid, {
-          categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset,
+          categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
         });
         setSupabaseSyncError("");
       } catch (syncErr) {
@@ -1804,6 +1929,45 @@ export default function App() {
       assigned,
     };
   }, [ffeItems, oseItems, roomTypes, vendors]);
+
+  // 발주서 생성 — 업체별로 품목을 모아 엑셀(ExcelJS) 생성·다운로드.
+  // 단가: 집행단가 우선, 없으면 예산단가를 쓰고 비고에 "가단가 · 미확정" 표시. 수량: 화면의 필요수량(카톤 올림 포함) 그대로.
+  // 공무팀 소관(orderOwner === "공무팀") 품목은 제외 — 미지정(null)은 오픈바이징팀으로 간주.
+  async function handleGeneratePo({ orderDate, deliveryDate, contact, vendorIds }) {
+    setPoContact(contact);
+    const byVendor = new Map();
+    function push(it, qty, roomLabel) {
+      if (!it.vendorId || !vendorIds.includes(it.vendorId)) return;
+      if (it.orderOwner === "공무팀") return;
+      if (!qty) return;
+      const loose = !it.actualUnitPrice && it.unitPrice;
+      const price = it.actualUnitPrice || it.unitPrice || 0;
+      const noteParts = [];
+      if (roomLabel) noteParts.push(roomLabel);
+      if (loose) noteParts.push("가단가 · 미확정");
+      if (!byVendor.has(it.vendorId)) byVendor.set(it.vendorId, { items: [], looseCount: 0 });
+      const g = byVendor.get(it.vendorId);
+      g.items.push({ name: it.name, brand: it.brand || "", spec: it.spec || "", unit: "EA", qty, price, note: noteParts.join(" / ") });
+      if (loose) g.looseCount += 1;
+    }
+    roomTypes.forEach((rt) => {
+      (ffeItems[rt.id] || []).forEach((it) => push(it, ffeItemQty(it, rt), generateRoomName(rt)));
+    });
+    oseItems.forEach((it) => push(it, oseItemQty(it), ""));
+
+    const groups = Array.from(byVendor.entries()).map(([vendorId, g]) => {
+      const v = vendors.find((x) => x.id === vendorId) || {};
+      return {
+        vendorName: v.name || "(삭제된 업체)",
+        vendorContactName: v.contactName || "",
+        vendorContactPhone: v.phone || "",
+        items: g.items,
+        remark: g.looseCount > 0 ? `가단가 표시 품목 ${g.looseCount}건은 집행단가 미확정으로 예산단가를 기재함. 확정 후 정정 발주 필요.` : "",
+      };
+    });
+    if (groups.length === 0) throw new Error("선택한 업체에 발주 가능한 품목이 없습니다.");
+    await exportPurchaseOrders({ projectName: projectName || "프로젝트", orderDate, deliveryDate, company: contact, groups });
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
@@ -2837,8 +3001,17 @@ export default function App() {
           </div>
         )}
 
-        {/* 발주 준비 상태 — 업체별 집계, 실제 발주서는 채팅으로 요청해서 받음 */}
-        <VendorPrepPanel summary={vendorPrepSummary} />
+        {/* 발주 준비 상태 — 업체별 집계 + 발주서 엑셀 생성 */}
+        <VendorPrepPanel summary={vendorPrepSummary} onGenerate={() => setPoModalOpen(true)} />
+        <PoModal
+          open={poModalOpen}
+          onClose={() => setPoModalOpen(false)}
+          onSubmit={handleGeneratePo}
+          assigned={vendorPrepSummary.assigned}
+          unassignedCount={vendorPrepSummary.unassignedCount}
+          initialContact={poContact}
+          projectName={projectName}
+        />
 
         {/* FF&E 발주 품목 (룸타입별) */}
         {roomTypes.length > 0 && (
@@ -3063,6 +3236,8 @@ export default function App() {
                         <thead>
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                             <th className="py-1.5 font-normal">품목명</th>
+                            <th className="py-1.5 font-normal" title="발주서 '브랜드/제조사' 열 — 카탈로그에 없어 직접 입력">브랜드</th>
+                            <th className="py-1.5 font-normal" title="발주서 '규격' 열 — 카탈로그에서 불러오면 자동 입력, 수정 가능">규격</th>
                             <th className="py-1.5 font-normal" title="회계 대분류 — 룸타입 카드 안에 있어도 실제로는 OS&E(린넨/타올 등)일 수 있음">구분</th>
                             <th className="py-1.5 font-normal" title="이 품목을 발주할 업체 — 발주서 생성 시 업체별로 그룹핑됨">업체</th>
                             <th className="py-1.5 font-normal text-right">공급예산단가</th>
@@ -3086,6 +3261,22 @@ export default function App() {
                                   onChange={(e) => updateFfeItem(rt.id, it.id, "name", e.target.value)}
                                   placeholder="예: 퀸 매트리스"
                                   className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                              </td>
+                              <td className="py-1.5">
+                                <input
+                                  value={it.brand || ""}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "brand", e.target.value)}
+                                  placeholder="제조사"
+                                  className="w-20 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                              </td>
+                              <td className="py-1.5">
+                                <input
+                                  value={it.spec || ""}
+                                  onChange={(e) => updateFfeItem(rt.id, it.id, "spec", e.target.value)}
+                                  placeholder="규격"
+                                  className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
                                 />
                               </td>
                               <td className="py-1.5">
@@ -3327,6 +3518,8 @@ export default function App() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="py-1.5 font-normal">품목명</th>
+                  <th className="py-1.5 font-normal" title="발주서 '브랜드/제조사' 열 — 카탈로그에 없어 직접 입력">브랜드</th>
+                  <th className="py-1.5 font-normal" title="발주서 '규격' 열 — 카탈로그에서 불러오면 자동 입력, 수정 가능">규격</th>
                   <th className="py-1.5 font-normal" title="회계 대분류 — '공통 품목' 카드에 있어도 실제로는 FF&E일 수 있음(예: 드라이기)">구분</th>
                   <th className="py-1.5 font-normal" title="이 품목을 발주할 업체 — 발주서 생성 시 업체별로 그룹핑됨">업체</th>
                   <th className="py-1.5 font-normal text-right">공급예산단가</th>
@@ -3349,6 +3542,22 @@ export default function App() {
                         onChange={(e) => updateOseItem(it.id, "name", e.target.value)}
                         placeholder="예: 객실 타월 세트"
                         className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        value={it.brand || ""}
+                        onChange={(e) => updateOseItem(it.id, "brand", e.target.value)}
+                        placeholder="제조사"
+                        className="w-20 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </td>
+                    <td className="py-1.5">
+                      <input
+                        value={it.spec || ""}
+                        onChange={(e) => updateOseItem(it.id, "spec", e.target.value)}
+                        placeholder="규격"
+                        className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
                       />
                     </td>
                     <td className="py-1.5">
