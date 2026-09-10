@@ -12,12 +12,20 @@ const sbHeaders = {
 };
 
 // App.jsx 로컬 상태 -> settings jsonb 페이로드
-function toSettings({ categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact }) {
+// tier/targetRoomCount/budgetPerRoom/savedAt: 예전 Apps Script 블롭에만 있던 값 — 2026-09-10부터 settings에 함께 저장
+// (배정예산 totalBudget은 projects.assigned_budget 컬럼에 저장, projectsApi.updateProject 참고)
+function toSettings({
+  categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
+  tier, targetRoomCount, budgetPerRoom, savedAt,
+}) {
   // poContact: { name, phone } — 발주서 [발주처] 담당자 기본값 (프로젝트별 저장)
-  return { categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact };
+  return {
+    categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
+    tier, targetRoomCount, budgetPerRoom, savedAt,
+  };
 }
 
-// projectUuid: projectIdApi.resolveProjectUuid()로 확보한 Supabase projects.id(uuid)
+// projectUuid: Supabase projects.id(uuid) — 발주관리 탭 드롭다운에서 선택한 프로젝트의 id 그대로
 export async function saveProjectSettings(projectUuid, state) {
   const settings = toSettings(state);
   const res = await fetch(

@@ -6,11 +6,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 
-import { getProjectIndex, getProjectData, saveProjectData, saveProjectIndex } from "./api";
+import { getProjectData } from "./api"; // 예전 Apps Script 블롭 읽기 전용(Supabase 이전 보완용)
 import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
 import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
 import { saveExpenses, loadExpenses } from "./expensesApi";
-import { resolveProjectUuid } from "./projectIdApi";
+import { listProjects, getProject, createProject, updateProject } from "./projectsApi";
 import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
 import { fetchContentPresets, fetchOseContentPresets } from "./contentPresetsApi";
 import { loadVendors, createVendor, updateVendor, deleteVendor } from "./vendorsApi";
@@ -1346,7 +1346,7 @@ export default function App() {
   const [saveError, setSaveError] = useState("");
   const [supabaseSyncError, setSupabaseSyncError] = useState("");
   const [loadNotice, setLoadNotice] = useState("");
-  const [projectList, setProjectList] = useState([]); // [{id, name}]
+  const [projectList, setProjectList] = useState([]); // Supabase projects 행 [{id(uuid), name, ...}] — 공정표와 같은 목록
   const [currentProjectId, setCurrentProjectId] = useState(null);
 
   function maxIdIn(data) {
@@ -1409,180 +1409,185 @@ export default function App() {
     idCounter = Math.max(idCounter, maxIdIn(data) + 1);
   }
 
+  // 예전에 발주관리 탭이 Apps Script에 따로 저장하던 프로젝트 블롭(룸타입 byFloor·티어·예산 등).
+  // 아직 Supabase로 넘어가지 못한 값을 보완하기 위해 projects.client_id가 남아 있는 프로젝트만 한 번 읽는다.
+  // '팀 저장소에 저장'을 한 번 누르면 전부 Supabase로 넘어가므로 그 뒤엔 실질적으로 쓰이지 않는다.
+  async function loadLegacyBlob(clientId) {
+    if (!clientId) return null;
+    try {
+      return await getProjectData(clientId);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // id: Supabase projects.id(uuid) — 공정표 탭과 같은 값. 2026-09-10부터 발주관리 탭도 로컬 프로젝트 목록 없이
+  // Supabase projects를 직접 읽는다(이름 불일치로 프로젝트가 중복 생성되던 문제 해소).
   async function switchToProject(id) {
+    if (!id) return;
     setIsLoading(true);
     resetProjectState();
+    setLoadNotice("");
+    setSupabaseSyncError("");
     try {
-      const data = await getProjectData(id);
-      if (data) {
-        let merged = { ...data };
-        try {
-          const projectUuid = await resolveProjectUuid(id, data.projectName);
-          const { roomTypes: sbRoomTypes, idMap } = await loadRoomTypes(projectUuid);
-          const { ffeItems: sbFfeItems, oseItems: sbOseItems } = await loadOrderItems(projectUuid, idMap);
-          const sbExpenses = await loadExpenses(projectUuid);
-          const sbSettings = await loadProjectSettings(projectUuid);
+      const project = await getProject(id);
+      if (!project) throw new Error("프로젝트를 찾을 수 없어요.");
+      const settings = project.settings || {};
+      const { roomTypes: sbRoomTypes, idMap } = await loadRoomTypes(id);
+      const { ffeItems: sbFfeItems, oseItems: sbOseItems } = await loadOrderItems(id, idMap);
+      const sbExpenses = await loadExpenses(id);
 
-          // 이 프로젝트가 실제로 한 번이라도 Supabase 동기화 저장을 거쳤는지 판단.
-          // 룸타입/발주품목/지출이 전부 비어있으면 아직 Apps Script 레거시 데이터만
-          // 있는 상태로 보고 그대로 둔다 (섣불리 덮어써서 데이터가 사라진 것처럼 보이는 것 방지 —
-          // 프로젝트별로 최초 저장이 일어나는 순간 자동으로 Supabase 쪽으로 전환됨).
-          const hasSupabaseData =
-            sbRoomTypes.length > 0 ||
-            sbOseItems.length > 0 ||
-            sbExpenses.siteExpenses.length > 0 ||
-            sbExpenses.laborExpenses.length > 0 ||
-            sbExpenses.extraExpenses.length > 0;
+      const hasSupabaseData =
+        sbRoomTypes.length > 0 ||
+        sbFfeItems.length > 0 ||
+        sbOseItems.length > 0 ||
+        sbExpenses.siteExpenses.length > 0 ||
+        sbExpenses.laborExpenses.length > 0 ||
+        sbExpenses.extraExpenses.length > 0 ||
+        Object.keys(settings).length > 0;
 
-          if (hasSupabaseData) {
-            // byFloor(층별 배치)는 아직 Supabase에 없으므로 기존 Apps Script 데이터에서 id 매칭으로 보완
-            const legacyById = {};
-            (data.roomTypes || []).forEach((rt) => {
-              legacyById[rt.id] = rt;
-            });
-            merged.roomTypes = sbRoomTypes.map((rt) => ({
-              ...rt,
-              byFloor: (legacyById[rt.id] && legacyById[rt.id].byFloor) || rt.byFloor || {},
-            }));
-            merged.ffeItems = sbFfeItems;
-            merged.oseItems = sbOseItems;
-            merged.siteExpenses = sbExpenses.siteExpenses;
-            merged.laborExpenses = sbExpenses.laborExpenses;
-            merged.extraExpenses = sbExpenses.extraExpenses;
-            if (sbSettings) merged = { ...merged, ...sbSettings };
-          }
-          setSupabaseSyncError("");
-        } catch (sbErr) {
-          // Supabase 읽기 실패 — Apps Script 데이터만으로 계속 진행(기존 동작과 동일), 경고만 표시
-          setSupabaseSyncError("Supabase에서 최신 데이터를 불러오지 못했어요(기존 저장 데이터로 표시 중).");
-        }
-        applyLoadedData(merged);
-        setLoadNotice("팀원들과 공유된 이전 데이터를 불러왔어요.");
+      const legacy = await loadLegacyBlob(project.client_id);
+      const legacyById = {};
+      (legacy && legacy.roomTypes ? legacy.roomTypes : []).forEach((rt) => {
+        legacyById[rt.id] = rt;
+      });
+
+      let merged;
+      if (hasSupabaseData) {
+        merged = {
+          ...settings,
+          projectName: project.name || "",
+          totalBudget:
+            project.assigned_budget != null ? Number(project.assigned_budget) : legacy ? legacy.totalBudget : undefined,
+          tier: settings.tier ?? (legacy ? legacy.tier : undefined),
+          targetRoomCount: settings.targetRoomCount ?? (legacy ? legacy.targetRoomCount : undefined),
+          budgetPerRoom: settings.budgetPerRoom ?? (legacy ? legacy.budgetPerRoom : undefined),
+          savedAt: settings.savedAt ?? (legacy ? legacy.savedAt : undefined),
+          // by_floor 컬럼이 비어 있는(예전에 저장된) 룸타입은 Apps Script 블롭의 byFloor로 보완
+          roomTypes: sbRoomTypes.map((rt) => ({
+            ...rt,
+            byFloor:
+              Object.keys(rt.byFloor || {}).length > 0
+                ? rt.byFloor
+                : (legacyById[rt.id] && legacyById[rt.id].byFloor) || {},
+          })),
+          ffeItems: sbFfeItems,
+          oseItems: sbOseItems,
+          siteExpenses: sbExpenses.siteExpenses,
+          laborExpenses: sbExpenses.laborExpenses,
+          extraExpenses: sbExpenses.extraExpenses,
+        };
+      } else if (legacy) {
+        merged = { ...legacy, projectName: project.name || legacy.projectName || "" };
+        setLoadNotice(
+          "예전 저장소(Apps Script)에만 있던 데이터를 불러왔어요. '팀 저장소에 저장'을 한 번 누르면 Supabase로 이전됩니다."
+        );
+      } else {
+        merged = {
+          projectName: project.name || "",
+          totalBudget: project.assigned_budget != null ? Number(project.assigned_budget) : undefined,
+        };
       }
+      applyLoadedData(merged);
     } catch (err) {
-      // 아직 저장 이력 없는 새 프로젝트이거나 네트워크 오류
+      setSaveError("프로젝트를 불러오지 못했어요: " + (err.message || "네트워크 상태를 확인해주세요."));
     } finally {
       setCurrentProjectId(id);
       setIsLoading(false);
     }
   }
 
-  async function createNewProject() {
-    const name = window.prompt("새 프로젝트 이름을 입력하세요", "새 프로젝트");
-    if (!name) return;
-    const id = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const newList = [...projectList, { id, name }];
-    setProjectList(newList);
-    await saveProjectIndex(newList);
-    resetProjectState();
-    setProjectName(name);
-    setCurrentProjectId(id);
-    setIsLoading(false);
-    setLoadNotice("");
+  async function refreshProjectList() {
+    const list = await listProjects();
+    setProjectList(list);
+    return list;
   }
 
-  // 테스트 공정표 탭에서 프로젝트명을 클릭해 발주 관리 탭으로 바로 넘어올 때 사용.
-  // supaProject: Supabase projects 테이블의 행({ id: uuid, client_id, name, ... })
+  // 공정표 탭의 "+ 새 프로젝트"와 동일하게 Supabase projects에 바로 생성(기본 마일스톤 5단계 포함)
+  async function createNewProject() {
+    const name = window.prompt("새 프로젝트 이름을 입력하세요\n(공정표 탭에도 같은 프로젝트로 함께 등록됩니다)", "");
+    if (!name || !name.trim()) return;
+    setIsLoading(true);
+    try {
+      const project = await createProject(name.trim());
+      setProjectList((prev) => [...prev, project]);
+      await switchToProject(project.id);
+    } catch (err) {
+      setSaveError("프로젝트 생성에 실패했어요: " + err.message);
+      setIsLoading(false);
+    }
+  }
+
+  // 테스트 공정표 탭에서 프로젝트명 옆 ↗ 버튼으로 발주 관리 탭으로 넘어올 때 사용.
+  // supaProject: Supabase projects 테이블의 행({ id: uuid, name, ... }) — 같은 id를 그대로 연다.
   async function handleOpenInOrderManager(supaProject) {
     if (!supaProject) return;
-    let localId = supaProject.client_id;
-    let list = projectList;
-    if (localId) {
-      // client_id는 있는데 로컬 프로젝트 목록에 없는 경우(드물게 인덱스가 어긋난 경우) 목록에 채워 넣는다.
-      if (!list.some((p) => p.id === localId)) {
-        list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
-        setProjectList(list);
-        await saveProjectIndex(list);
-      }
-    } else {
-      // 아직 발주 관리 탭에서 한 번도 열어본 적 없는 프로젝트(전사시트로만 시딩됨) — 새 로컬 id를 만들어
-      // 목록에 추가하면, switchToProject 내부의 resolveProjectUuid가 이름 매칭으로 이 Supabase 행을 찾아
-      // client_id를 자동으로 채워준다.
-      localId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      list = [...list, { id: localId, name: supaProject.name || "(이름 없음)" }];
-      setProjectList(list);
-      await saveProjectIndex(list);
-    }
     setActiveTab("main");
-    await switchToProject(localId);
+    setProjectList((prev) =>
+      prev.some((p) => p.id === supaProject.id) ? prev : [...prev, supaProject]
+    );
+    await switchToProject(supaProject.id);
   }
 
   useEffect(() => {
     (async () => {
       try {
-        const list = await getProjectIndex();
-        if (list.length === 0) {
-          const id = `proj_${Date.now()}_init`;
-          const initialList = [{ id, name: "기본 프로젝트" }];
-          setProjectList(initialList);
-          await saveProjectIndex(initialList);
-          setCurrentProjectId(id);
+        const list = await refreshProjectList();
+        if (list.length > 0) {
+          await switchToProject(list[0].id);
+        } else {
           setIsLoading(false);
-          return;
         }
-        setProjectList(list);
-        await switchToProject(list[0].id);
       } catch (err) {
-        setSaveError("데이터를 불러오지 못했어요. APPS_SCRIPT_URL 설정을 확인해주세요.");
+        setSaveError("프로젝트 목록을 불러오지 못했어요. 네트워크 상태를 확인해주세요.");
         setIsLoading(false);
       }
     })();
   }, []);
 
-  function buildCurrentPayload(overrides = {}) {
-    return {
-      projectName,
-      tier,
-      totalBudget,
-      targetRoomCount,
-      budgetPerRoom,
-      categories,
-      irregularOptions,
-      brandRoomName,
-      roomFeatures,
-      viewTypes,
-      floors,
-      roomTypes,
-      ffeItems,
-      oseItems,
-      siteExpenses,
-      laborExpenses,
-      extraExpenses,
-      basicPreset,
-      poContact,
-      savedAt: new Date().toISOString(),
-      ...overrides,
-    };
-  }
+  // 공정표 탭에서 프로젝트를 추가/삭제/이름변경하고 돌아오면 드롭다운도 같은 목록이 되도록 다시 읽는다
+  useEffect(() => {
+    if (activeTab !== "main" || isLoading) return;
+    refreshProjectList()
+      .then((list) => {
+        if (currentProjectId && !list.some((p) => p.id === currentProjectId)) {
+          if (list.length > 0) switchToProject(list[0].id);
+          else {
+            resetProjectState();
+            setCurrentProjectId(null);
+          }
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
+  // 저장 — 전부 Supabase에 쓴다(2026-09-10부터 Apps Script 저장 없음).
+  // 룸타입/발주품목/지출은 각 테이블, 옵션 설정·티어·목표객실수·실당예산은 projects.settings, 프로젝트명·배정예산은 projects 컬럼.
   async function saveProject() {
     if (!currentProjectId) return;
     setIsSaving(true);
     setSaveError("");
+    setSupabaseSyncError("");
     try {
-      const payload = buildCurrentPayload();
-      const result = await saveProjectData(currentProjectId, payload);
-      if (!result || result.error) throw new Error(result && result.error);
-      setLastSaved(payload.savedAt);
-      const updatedList = projectList.map((p) => (p.id === currentProjectId ? { ...p, name: projectName || p.name } : p));
-      setProjectList(updatedList);
-      await saveProjectIndex(updatedList);
-      // Supabase room_types/order_items 동기화 — 기존 Apps Script 저장(위 로직)이 여전히 주 저장소이므로
-      // 여기서 실패해도 전체 저장 실패로 취급하지 않고 별도 경고만 표시한다 (단계적 이전 중)
-      try {
-        const projectUuid = await resolveProjectUuid(currentProjectId, projectName);
-        const roomTypeIdMap = await saveRoomTypes(projectUuid, roomTypes);
-        await saveOrderItems(projectUuid, ffeItems, oseItems, roomTypeIdMap);
-        await saveExpenses(projectUuid, { siteExpenses, laborExpenses, extraExpenses });
-        await saveProjectSettings(projectUuid, {
-          categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
-        });
-        setSupabaseSyncError("");
-      } catch (syncErr) {
-        setSupabaseSyncError("Supabase 동기화에 실패했어요(기본 저장은 정상 완료됨).");
-      }
+      const savedAt = new Date().toISOString();
+      const roomTypeIdMap = await saveRoomTypes(currentProjectId, roomTypes);
+      await saveOrderItems(currentProjectId, ffeItems, oseItems, roomTypeIdMap);
+      await saveExpenses(currentProjectId, { siteExpenses, laborExpenses, extraExpenses });
+      await saveProjectSettings(currentProjectId, {
+        categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
+        tier, targetRoomCount, budgetPerRoom, savedAt,
+      });
+      const patch = { assigned_budget: totalBudget || 0 };
+      if (projectName && projectName.trim()) patch.name = projectName.trim();
+      await updateProject(currentProjectId, patch);
+      setLastSaved(savedAt);
+      setLoadNotice("");
+      setProjectList((prev) =>
+        prev.map((p) => (p.id === currentProjectId ? { ...p, ...patch } : p))
+      );
     } catch (err) {
-      setSaveError("저장에 실패했어요. 잠시 후 다시 시도해주세요.");
+      setSaveError("저장에 실패했어요: " + (err.message || "잠시 후 다시 시도해주세요."));
     } finally {
       setIsSaving(false);
     }
@@ -2094,7 +2099,8 @@ export default function App() {
             </select>
             <button
               onClick={createNewProject}
-              className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
+              disabled={isLoading}
+              className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 disabled:opacity-50"
             >
               + 새 프로젝트
             </button>

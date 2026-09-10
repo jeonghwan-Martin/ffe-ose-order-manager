@@ -1,6 +1,6 @@
 // 발주관리 탭 룸타입 빌더 — Supabase room_types(+room_type_beds) 테이블 데이터 레이어
 // App.jsx는 로컬 nextId()로 룸타입 id를 관리하므로, client_id 컬럼으로 Supabase UUID와 매칭한다.
-// byFloor(층별 배치)는 이번 단계에서 보류 — Supabase엔 아직 반영하지 않고 기존 Apps Script 블롭에만 유지.
+// byFloor(층별 배치)는 room_types.by_floor(jsonb)에 저장한다(2026-09-10, Apps Script 의존 제거).
 const SUPABASE_URL = "https://fsjyzehxovazlmuihxxd.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzanl6ZWh4b3ZhemxtdWloeHhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU5MTQ5NzcsImV4cCI6MjEwMTQ5MDk3N30.SayUMy8ajeMKGYmzek0H152dKwCLEzTP38yYm8u0a-g";
@@ -41,6 +41,7 @@ function toRow(rt, projectId) {
     category: rt.category ?? null,
     mattress_qty: rt.mattressQty ?? null,
     room_count: roomCountOf(rt),
+    by_floor: rt.byFloor || {},
     capacity: rt.capacity ?? null,
     irregular_options: rt.irregular ?? [],
     grade: rt.grade ?? null,
@@ -87,7 +88,7 @@ async function syncRoomTypeBeds(idMap, roomTypes) {
   if (!insRes.ok) throw new Error(`room_type_beds 저장 실패 (${insRes.status})`);
 }
 
-// projectUuid: projectIdApi.resolveProjectUuid()로 확보한 Supabase projects.id(uuid)
+// projectUuid: Supabase projects.id(uuid) — 발주관리 탭 드롭다운에서 선택한 프로젝트 id
 // roomTypes(App.jsx 로컬 상태)를 Supabase room_types+room_type_beds와 동기화(client_id 기준 upsert, 삭제된 항목 제거)
 // 반환값: { [localId]: supabaseUuid } — order_items 저장 시 room_type_id FK 채우는 데 사용
 export async function saveRoomTypes(projectUuid, roomTypes) {
@@ -142,7 +143,6 @@ export async function saveRoomTypes(projectUuid, roomTypes) {
 }
 
 // Supabase room_types(+room_type_beds)를 읽어 App.jsx 로컬 형태로 변환
-// (byFloor/room_count는 포함하지 않음 — Apps Script 블롭 값으로 보완 필요, byFloor 합산이 곧 room_count이므로)
 export async function loadRoomTypes(projectId) {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/room_types?project_id=eq.${projectId}&select=*`,
@@ -190,6 +190,7 @@ export async function loadRoomTypes(projectId) {
       otaMaxOccupancy: row.ota_max_occupancy,
       otaFacilities: row.ota_facilities,
       roomNumbers: row.room_numbers || [],
+      byFloor: row.by_floor || {},
     };
   });
   return { roomTypes, idMap };
