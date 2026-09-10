@@ -596,7 +596,24 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
   }
 
 
+  // 드래그 상태(mode: move/start/end, deltaDays)를 원래 시작·종료일에 적용해 새 날짜 쌍을 돌려줌
+  // 리사이즈 시 시작일이 종료일을 넘어가지 않도록(최소 1일 이상 유지) 잡아줌
+  function applyDrag(origS, origE, drag) {
+    const d = drag.deltaDays || 0;
+    const shift = (date, days) => new Date(date.getTime() + days * 86400000);
+    if (drag.mode === "start") {
+      const maxDelta = daysBetween(origS, origE) - 1; // 종료일 하루 전까지만
+      return { s: shift(origS, Math.min(d, maxDelta)), e: origE };
+    }
+    if (drag.mode === "end") {
+      const minDelta = -(daysBetween(origS, origE) - 1); // 시작일 다음날까지만
+      return { s: origS, e: shift(origE, Math.max(d, minDelta)) };
+    }
+    return { s: shift(origS, d), e: shift(origE, d) };
+  }
+
   // 마일스톤 바를 좌우로 끌면 픽셀 이동량을 날짜로 환산 — 놓는 순간 실제 시작/종료일로 저장
+  // 바 몸통을 잡으면 통째로 이동, 양끝 핸들을 잡으면 시작일/종료일만 늘리고 줄임
   useEffect(() => {
     if (!dragState) return;
     function handleMove(evt) {
@@ -607,16 +624,18 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
     function handleUp() {
       setDragState((prev) => {
         if (prev && prev.deltaDays) {
-          const newStart = new Date(prev.origStart);
-          newStart.setDate(newStart.getDate() + prev.deltaDays);
-          const newEnd = new Date(prev.origEnd);
-          newEnd.setDate(newEnd.getDate() + prev.deltaDays);
+          const { s: newStart, e: newEnd } = applyDrag(prev.origStart, prev.origEnd, prev);
           const newStartStr = toDateStr(newStart);
           const newEndStr = toDateStr(newEnd);
-          updateMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
-          updateMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
-          saveMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
-          saveMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
+          // 이동(move)은 양쪽 다, 리사이즈는 잡은 쪽 날짜만 저장
+          if (prev.mode !== "end") {
+            updateMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
+            saveMilestoneField(prev.milestoneId, "actual_start_date", newStartStr);
+          }
+          if (prev.mode !== "start") {
+            updateMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
+            saveMilestoneField(prev.milestoneId, "actual_end_date", newEndStr);
+          }
         }
         return null;
       });
@@ -668,9 +687,8 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
     const status = effectiveStatus(m, today);
     const style = STATUS_STYLE[status];
     const isDragging = dragState && dragState.milestoneId === m.id;
-    const dragDays = isDragging ? dragState.deltaDays || 0 : 0;
-    const dispS = dragDays ? new Date(s.getTime() + dragDays * 86400000) : s;
-    const dispE = dragDays ? new Date(e.getTime() + dragDays * 86400000) : e;
+    const { s: dispS, e: dispE } = isDragging ? applyDrag(s, e, dragState) : { s, e };
+    const isResizing = isDragging && dragState.mode !== "move";
     const left = xFor(dispS);
     const width = Math.max(xFor(dispE) - xFor(dispS), 4);
     const shortDate = (d) =>
@@ -683,7 +701,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
       >
         <div
           className={`relative rounded-md border text-[11px] pl-5 pr-5 flex items-center overflow-visible whitespace-nowrap select-none ${
-            isDragging ? "cursor-grabbing shadow-md" : "cursor-grab"
+            isDragging ? (isResizing ? "cursor-ew-resize shadow-md" : "cursor-grabbing shadow-md") : "cursor-grab"
           }`}
           style={{
             width,
@@ -710,6 +728,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             evt.preventDefault();
             setDragState({
               milestoneId: m.id,
+              mode: "move",
               startX: evt.clientX,
               origStart: s,
               origEnd: e,
@@ -717,8 +736,32 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             });
           }}
           onClick={(evt) => evt.stopPropagation()}
-          title="끌어서 일정 변경"
+          title="끌어서 일정 이동 · 양끝을 잡으면 기간 조절"
         >
+          {/* 리사이즈 핸들 — 바 양끝 좁은 영역을 잡으면 시작일/종료일만 조절 */}
+          {["start", "end"].map((mode) => (
+            <div
+              key={mode}
+              className={`absolute top-0 h-full w-2 cursor-ew-resize z-10 ${
+                mode === "start" ? "left-0 rounded-l-md" : "right-0 rounded-r-md"
+              } hover:bg-black/10`}
+              onMouseDown={(evt) => {
+                evt.stopPropagation();
+                evt.preventDefault();
+                setHovered(null);
+                setDragState({
+                  milestoneId: m.id,
+                  mode,
+                  startX: evt.clientX,
+                  origStart: s,
+                  origEnd: e,
+                  deltaDays: 0,
+                });
+              }}
+              onClick={(evt) => evt.stopPropagation()}
+              title={mode === "start" ? "끌어서 시작일 조절" : "끌어서 종료일 조절"}
+            />
+          ))}
           {/* 완료 체크 — 클릭 한 번으로 이 마일스톤을 완료/미완료 전환 */}
           <button
             type="button"
@@ -751,7 +794,7 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
           {/* 삭제 — 평소엔 숨겨져있다가 바에 마우스 올리면 나타남(드래그로 만든 일정 빠르게 지우기) */}
           <button
             type="button"
-            className="absolute right-0.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border border-slate-300 text-slate-500 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-600 items-center justify-center text-[10px] leading-none opacity-0 group-hover/bar:opacity-100 transition-opacity hidden sm:flex"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border border-slate-300 text-slate-500 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-600 items-center justify-center text-[10px] leading-none opacity-0 group-hover/bar:opacity-100 transition-opacity hidden sm:flex"
             onMouseDown={(evt) => evt.stopPropagation()}
             onClick={(evt) => {
               evt.stopPropagation();
