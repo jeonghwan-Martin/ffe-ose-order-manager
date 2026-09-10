@@ -1625,38 +1625,49 @@ export default function App() {
     return tokens;
   }
 
+  // "ROOM(101)-스탠다드 트윈(욕조)" 같은 관리시트 표기와 "스탠다드 트윈 로프트"처럼
+  // 룸타입명만 적힌 표기를 모두 처리한다. 예전엔 대시가 없으면 뒷부분이 빈 문자열이 되어
+  // 모든 룸타입이 "미분류"로 합쳐지던 문제가 있었음(2026-09-10 수정).
   function parseRoomTypeLabel(label) {
-    const afterDash = label.split("-").slice(1).join("-").trim();
-    const parenMatch = afterDash.match(/\(([^)]+)\)\s*$/);
+    const hasPrefix = /^ROOM\s*\(/i.test(label) && label.includes("-");
+    const body = hasPrefix ? label.split("-").slice(1).join("-").trim() : label.trim();
+    const parenMatch = body.match(/\(([^)]+)\)\s*$/);
     const paren = parenMatch ? parenMatch[1].trim() : "";
-    let base = afterDash.replace(/\([^)]+\)\s*$/, "").trim();
-    base = base.replace(/^스탠다드\s*/, "").trim();
+    let base = body.replace(/\([^)]+\)\s*$/, "").trim();
+    // 관리시트 표기에서만 중복 접두어 "스탠다드"를 떼어낸다(룸타입명 자체가 "스탠다드 트윈"인 경우는 보존)
+    if (hasPrefix) base = base.replace(/^스탠다드\s*/, "").trim();
     return { category: base || "미분류", paren };
   }
 
+  // 구성 문구는 팀·현장마다 표기가 달라("퀸베드" / "퀸 베드" / "싱글 베드 2" / "더블 베드"),
+  // 공백을 제거한 뒤 파싱한다. 수량은 "싱글베드2"처럼 뒤에 붙는 숫자를 읽는다(2026-09-10 보완).
   function parseComposition(comp, paren) {
-    const text = comp || "";
-    const hasQueen = /퀸베드/.test(text);
-    const singleMatch = text.match(/싱글베드\s*(\d+)?/);
-    let bed = hasQueen ? "퀸" : singleMatch ? "싱글" : "퀸";
-    let mattressQty = 1;
-    const extraIrregular = [];
+    const raw = comp || "";
+    const text = raw.replace(/\s+/g, "");
+    const queenMatch = text.match(/퀸베드(\d+)?/);
+    const singleMatch = text.match(/싱글베드(\d+)?/);
+    const doubleMatch = text.match(/더블베드(\d+)?/);
+    const qtyOf = (m) => (m && m[1] ? parseInt(m[1], 10) : 1);
     const bedComposition = [];
-    if (singleMatch && !hasQueen) {
-      mattressQty = singleMatch[1] ? parseInt(singleMatch[1], 10) : 1;
-      bedComposition.push({ size: "S", qty: mattressQty });
-    } else if (singleMatch && hasQueen) {
-      // 퀸+싱글 복합구성(예: 패밀리룸) — 침대구성 배열로 정확히 기록, 태그는 참고용으로 유지
-      extraIrregular.push("싱글베드 추가");
-      const singleQty = singleMatch[1] ? parseInt(singleMatch[1], 10) : 1;
-      bedComposition.push({ size: "Q", qty: 1 }, { size: "S", qty: singleQty });
-    } else if (hasQueen) {
-      bedComposition.push({ size: "Q", qty: 1 });
+    const extraIrregular = [];
+    if (queenMatch) bedComposition.push({ size: "Q", qty: qtyOf(queenMatch) });
+    if (doubleMatch) {
+      // 더블(D)은 매트리스 사이즈 지원 목록에 없어 Q로 잡고 태그로 남긴다(K/D 사이즈 지원은 별건으로 보류 중)
+      bedComposition.push({ size: "Q", qty: qtyOf(doubleMatch) });
+      extraIrregular.push("더블베드 포함");
     }
+    if (singleMatch) bedComposition.push({ size: "S", qty: qtyOf(singleMatch) });
+    if (singleMatch && (queenMatch || doubleMatch)) extraIrregular.push("싱글베드 추가");
+
+    // 대표 침대타입/매트리스 수량 — 퀸(또는 더블)이 있으면 퀸, 싱글만 있으면 싱글
+    const bed = queenMatch || doubleMatch ? "퀸" : singleMatch ? "싱글" : "퀸";
+    const mattressQty =
+      bedComposition.length > 0 ? bedComposition.reduce((a, b) => a + b.qty, 0) : 1;
+
     let bathtub = "무";
-    if (paren === "욕조" || /아크릴\s*욕조/.test(text)) bathtub = "유";
-    if (paren === "장애인") {
-      bathtub = "무";
+    if (paren === "욕조" || /욕조/.test(text)) bathtub = "유";
+    if (/샤워부스/.test(text) && !/욕조/.test(text)) bathtub = "무";
+    if (paren === "장애인" || /장애인/.test(text)) {
       extraIrregular.push("장애인객실");
     }
     return { bed, mattressQty, bathtub, extraIrregular, bedComposition };
@@ -1693,7 +1704,7 @@ export default function App() {
           const hoIdxA = normedRow.findIndex((c) => c.includes("호수"));
           if (hoIdxA !== -1) {
             const guessedCols = {};
-            ["룸타입", "구성", "인원"].forEach((key) => {
+            ["룸타입", "구성", "인원", "수량"].forEach((key) => {
               const idx = normedRow.findIndex((c) => c.includes(key));
               if (idx !== -1) guessedCols[key] = idx;
             });
@@ -1844,13 +1855,26 @@ export default function App() {
           const label = String(row[colIdx["룸타입"]] || "").trim();
           if (!label) continue;
           if (label === "총계" || label.includes("총 계")) break;
-          if (!label.startsWith("ROOM(")) {
-            facilityCount++;
-            continue;
-          }
           const composition = String(row[colIdx["구성"]] || "");
           const hoStr = String(row[colIdx["호수"]] || "");
           const roomNumbers = parseRoomNumberTokens(hoStr).filter((t) => /\d/.test(String(t)));
+          // 예전엔 "ROOM(...)" 접두로 객실 여부를 판별했는데, 같은 회사 양식이라도 룸타입 라벨을
+          // "스탠다드 더블"처럼 그냥 적는 파일(은평 힐튼 등)이 있어 객실이 전부 부대시설로 빠지던 문제가 있었음.
+          // Format B와 동일하게 "유효한 호수가 있는지"로 판별한다(2026-09-10).
+          if (roomNumbers.length === 0) {
+            facilityCount++;
+            continue;
+          }
+          const qtyRawA = colIdx["수량"] !== undefined ? String(row[colIdx["수량"]] ?? "").trim() : "";
+          const qtyNumA = qtyRawA === "" ? null : Number(qtyRawA.replace(/[^0-9.-]/g, ""));
+          if (qtyNumA && qtyNumA > 0 && roomNumbers.length < qtyNumA) {
+            const shortfall = qtyNumA - roomNumbers.length;
+            for (let m = 1; m <= shortfall; m++) roomNumbers.push(`미기재-${m}`);
+            roomNumberShortfalls.push(`${label}(${shortfall}개)`);
+          }
+          if (qtyNumA && qtyNumA > 0 && roomNumbers.length > qtyNumA) {
+            roomNumberExcesses.push(`${label}(수량 ${qtyNumA} < 호수 ${roomNumbers.length}개)`);
+          }
           const capRaw = colIdx["인원"] !== undefined ? String(row[colIdx["인원"]] ?? "").trim() : "";
           const capNum = capRaw === "" ? null : parseInt(capRaw.replace(/[^0-9]/g, ""), 10);
 
@@ -1894,7 +1918,9 @@ export default function App() {
         }
 
         if (newRoomTypes.length === 0) {
-          setImportError('"ROOM(...)" 형식의 룸타입 행을 찾지 못했어요.');
+          setImportError(
+            '"호수" 열에 호수가 채워진 룸타입 행을 찾지 못했어요. 층별 배치표에만 호수가 있고 "객실 별 정보" 표의 "호수" 칸이 비어있는 경우가 많아요 — 호수 칸을 채워서 다시 올려주세요.'
+          );
           return;
         }
       }
