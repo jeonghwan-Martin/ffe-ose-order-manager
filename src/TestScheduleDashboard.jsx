@@ -300,6 +300,32 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
       .catch(() => alert("마일스톤 추가에 실패했어요. 네트워크 상태를 확인해주세요."));
   }
 
+  // 기존 마일스톤과 같은 이름·분류·담당자로 새 일정을 하나 더 만든다(원본 바로 다음 순서, 커스텀 취급이라 삭제 가능)
+  // 오픈바이징 일정이 둘로 쪼개지는 것처럼 같은 단계가 기간 두 개로 나뉠 때 기존 일정을 덮어쓰지 않고 추가하기 위함
+  function duplicateMilestoneWithDates(orig, startDate, endDate) {
+    const siblings = milestonesByProject[orig.project_id] || [];
+    const after = siblings.filter((m) => m.sort_order > orig.sort_order);
+    createMilestone({
+      project_id: orig.project_id,
+      template_id: null,
+      name: orig.name,
+      category: orig.category ?? null,
+      manager: orig.manager ?? null,
+      weight: orig.weight ?? 1,
+      sort_order: orig.sort_order + 1,
+      actual_start_date: startDate,
+      actual_end_date: endDate,
+    })
+      .then((row) => {
+        // 원본 뒤에 오던 항목들은 순서를 한 칸씩 밀어 새 항목이 원본 바로 아래에 오게 함
+        setMilestones((prev) =>
+          [...prev.map((m) => (after.some((a) => a.id === m.id) ? { ...m, sort_order: m.sort_order + 1 } : m)), row]
+        );
+        after.forEach((m) => persistMilestone(m.id, { sort_order: m.sort_order + 1 }).catch(() => {}));
+      })
+      .catch(() => alert("일정 추가에 실패했어요. 네트워크 상태를 확인해주세요."));
+  }
+
   // 직접 추가한 마일스톤만 삭제 가능(템플릿에서 온 기본 6개는 보호)
   function deleteCustomMilestone(milestoneId) {
     if (!window.confirm("이 마일스톤을 삭제할까요? 되돌릴 수 없습니다.")) return;
@@ -1531,25 +1557,51 @@ export default function ScheduleDashboard({ onOpenInOrderManager } = {}) {
             <div className="space-y-1 max-h-64 overflow-y-auto">
               {(milestonesByProject[rangePopover.projectId] || []).map((m) => {
                 const hasDate = m.actual_start_date || m.planned_start_date;
+                const applyTo = () => {
+                  updateMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
+                  updateMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
+                  saveMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
+                  saveMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
+                  setRangePopover(null);
+                };
+                if (!hasDate) {
+                  return (
+                    <button
+                      key={m.id}
+                      className="w-full text-left px-2.5 py-2 rounded-md hover:bg-indigo-50 text-sm text-slate-700"
+                      onClick={applyTo}
+                    >
+                      {m.name}
+                    </button>
+                  );
+                }
+                // 이미 일정이 있는 항목: 덮어쓸지, 같은 이름으로 새 일정을 하나 더 만들지 선택
                 return (
-                  <button
+                  <div
                     key={m.id}
-                    className="w-full text-left px-2.5 py-2 rounded-md hover:bg-indigo-50 text-sm text-slate-700 flex items-center justify-between"
-                    onClick={() => {
-                      updateMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
-                      updateMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
-                      saveMilestoneField(m.id, "actual_start_date", rangePopover.startDate);
-                      saveMilestoneField(m.id, "actual_end_date", rangePopover.endDate);
-                      setRangePopover(null);
-                    }}
+                    className="px-2.5 py-2 rounded-md hover:bg-slate-50 text-sm text-slate-700 flex items-center justify-between gap-2"
                   >
-                    <span>{m.name}</span>
-                    {hasDate && (
-                      <span className="text-[10px] text-amber-600 flex-shrink-0 ml-2">
-                        기존 일정 덮어씀
-                      </span>
-                    )}
-                  </button>
+                    <span className="truncate">{m.name}</span>
+                    <span className="flex gap-1 flex-shrink-0">
+                      <button
+                        className="text-[11px] px-2 py-0.5 rounded border border-amber-300 text-amber-700 hover:bg-amber-50"
+                        onClick={applyTo}
+                        title="이 마일스톤의 기존 일정을 이 구간으로 바꿉니다"
+                      >
+                        덮어쓰기
+                      </button>
+                      <button
+                        className="text-[11px] px-2 py-0.5 rounded border border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+                        onClick={() => {
+                          duplicateMilestoneWithDates(m, rangePopover.startDate, rangePopover.endDate);
+                          setRangePopover(null);
+                        }}
+                        title="기존 일정은 두고 같은 이름의 일정을 하나 더 만듭니다(예: 오픈바이징 2차)"
+                      >
+                        새 일정으로 추가
+                      </button>
+                    </span>
+                  </div>
                 );
               })}
             </div>
