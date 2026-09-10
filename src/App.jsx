@@ -1758,6 +1758,7 @@ export default function App() {
       const floorSet = new Set(floors);
       let facilityCount = 0;
       const roomNumberShortfalls = []; // "수량"보다 "호수" 목록이 모자란 룸타입 경고용
+      const roomNumberExcesses = []; // "수량"보다 "호수" 목록이 많은 룸타입 경고용(호수 복붙/오타)
 
       if (format === "B") {
         // 설계팀 룸믹스: 행 하나 = 룸타입 하나. 침대타입/욕조유무/객실등급은 라벨에서 추측하지 않고
@@ -1771,15 +1772,28 @@ export default function App() {
           const qtyNum = qtyRaw === "" ? null : Number(qtyRaw.replace(/[^0-9.-]/g, ""));
           if (qtyNum !== null && !Number.isNaN(qtyNum) && qtyNum === 0) continue; // 수량 0(운용 종료 등)이면 호수가 남아있어도 스킵
           const roomNumStr = String(row[colIdx.roomNumber] || "").trim();
-          if (!roomNumStr) continue; // 호수 없는 행(부대시설 등)은 건너뜀
-          const roomNumbers = parseRoomNumberTokens(roomNumStr);
-          if (roomNumbers.length === 0) continue;
+          if (!roomNumStr) {
+            facilityCount++; // 호수 칸이 빈 행(부대시설 등)
+            continue;
+          }
+          // 호수 칸에 "-"나 "없음"처럼 실제 호수가 아닌 값만 적힌 행도 부대시설(로비/카페테리아/직원실 등)로 본다.
+          // 예전엔 "-"가 호수 1개로 파싱돼 부대시설이 룸타입으로 잡히던 버그가 있었음(2026-09-10 수정).
+          const roomNumbers = parseRoomNumberTokens(roomNumStr).filter((t) => /\d/.test(String(t)));
+          if (roomNumbers.length === 0) {
+            facilityCount++;
+            continue;
+          }
           // "수량"이 진짜 기준값 — 호수 목록에 오타/누락으로 개수가 모자라면(원본 파일 자체의 흔한 실수)
           // 조용히 객실수가 줄어들지 않도록 부족한 만큼 "미기재" 자리를 채워 총 객실수를 수량과 맞춘다
           if (qtyNum && qtyNum > 0 && roomNumbers.length < qtyNum) {
             const shortfall = qtyNum - roomNumbers.length;
             for (let m = 1; m <= shortfall; m++) roomNumbers.push(`미기재-${m}`);
             roomNumberShortfalls.push(`${label}(${shortfall}개)`);
+          }
+          // 반대로 호수가 수량보다 많은 경우(다른 룸타입 호수를 복붙했거나 오타) — 임의로 잘라내면
+          // 어느 호수를 버릴지 알 수 없으므로 전부 살려두고 경고만 띄운다
+          if (qtyNum && qtyNum > 0 && roomNumbers.length > qtyNum) {
+            roomNumberExcesses.push(`${label}(수량 ${qtyNum} < 호수 ${roomNumbers.length}개)`);
           }
           const maxOcc = colIdx.maxOcc !== -1 ? String(row[colIdx.maxOcc] || "").trim() : "";
           const maxOccNum = maxOcc === "" ? null : parseInt(maxOcc.replace(/[^0-9]/g, ""), 10);
@@ -1836,7 +1850,7 @@ export default function App() {
           }
           const composition = String(row[colIdx["구성"]] || "");
           const hoStr = String(row[colIdx["호수"]] || "");
-          const roomNumbers = parseRoomNumberTokens(hoStr);
+          const roomNumbers = parseRoomNumberTokens(hoStr).filter((t) => /\d/.test(String(t)));
           const capRaw = colIdx["인원"] !== undefined ? String(row[colIdx["인원"]] ?? "").trim() : "";
           const capNum = capRaw === "" ? null : parseInt(capRaw.replace(/[^0-9]/g, ""), 10);
 
@@ -1927,11 +1941,14 @@ export default function App() {
       setImportSummary(
         (format === "B"
           ? `설계팀 룸믹스 형식으로 인식했어요. 룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요. 침대타입·욕조유무·객실등급은 기본값으로 채워졌으니 필요하면 직접 수정해주세요.`
-          : `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.` +
-            (facilityCount > 0 ? ` (부대시설성 항목 ${facilityCount}개는 제외됨)` : "")) +
+          : `룸타입 ${newRoomTypes.length}개, 호수 ${totalRooms}개를 가져왔어요.`) +
+          (facilityCount > 0 ? ` (호수 없는 부대시설성 항목 ${facilityCount}개는 제외됨)` : "") +
           (overwriteOnImport ? " 기존에 같은 룸타입이 있으면 덮어썼어요." : "") +
           (roomNumberShortfalls.length > 0
             ? ` ⚠️ 다음 룸타입은 "수량"보다 "호수" 목록이 모자라 부족한 만큼 "미기재-N"으로 채워 넣었어요(총 객실수는 정확함, 호수만 비어있음) — 층별 배치표에서 실제 호수로 직접 채워주세요: ${roomNumberShortfalls.join(", ")}`
+            : "") +
+          (roomNumberExcesses.length > 0
+            ? ` ⚠️ 다음 룸타입은 "수량"보다 "호수"가 많아요 — 원본 파일의 호수 목록이 잘못됐을 가능성이 큽니다(다른 룸타입 호수를 복사한 경우 등). 호수를 임의로 버리지 않고 전부 가져왔으니 원본을 확인하고 층별 배치표에서 정리해주세요: ${roomNumberExcesses.join(", ")}`
             : "")
       );
     } catch (err) {
