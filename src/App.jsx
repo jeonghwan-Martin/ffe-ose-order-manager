@@ -727,6 +727,10 @@ export default function App() {
   // 발주 품목: FF&E는 룸타입별, OS&E는 공통 리스트 (각 항목은 예산단가 unitPrice + 집행단가 actualUnitPrice)
   const [ffeItems, setFfeItems] = useState({}); // { [roomTypeId]: [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}] }
   const [oseItems, setOseItems] = useState([]); // [{id,name,unitPrice,actualUnitPrice,qtyPerRoom}]
+  // "룸타입 속성 정의" 카드 접기/펼치기 — 룸믹스 엑셀을 올리면 룸타입이 한 번에 만들어져서
+  // 속성을 손으로 정의하거나 룸타입을 직접 조합할 일이 드물다. 지워버리기엔 애매해서 기본 접힘으로 둔다.
+  const [attrSectionOpen, setAttrSectionOpen] = useState(false);
+
   // 룸타입별 품목 카드 접기/펼치기 — 품목이 많아지면 스크롤이 매우 길어져서 필요한 카드만 펴놓고 볼 수 있게
   const [collapsedRoomTypeIds, setCollapsedRoomTypeIds] = useState(new Set());
   function toggleRoomTypeCollapsed(roomTypeId) {
@@ -2437,13 +2441,27 @@ export default function App() {
         </div>
 
         {/* Attribute definitions */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4 text-slate-500">
+        <div className={`bg-white border border-slate-200 rounded-xl ${attrSectionOpen ? "p-6" : "px-6 py-4"}`}>
+          <button
+            onClick={() => setAttrSectionOpen((v) => !v)}
+            className="w-full flex items-center gap-2 text-slate-500 hover:text-slate-700"
+            title="룸카테고리·침대타입 등 속성을 직접 정의하고 룸타입을 손으로 조합하는 영역이에요. 룸믹스 엑셀을 올리면 자동으로 만들어지니 평소엔 접어두면 됩니다."
+          >
+            {attrSectionOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             <LayoutGrid size={18} />
             <span className="text-sm font-medium tracking-wide">룸타입 속성 정의</span>
-          </div>
+            {!attrSectionOpen && (
+              <span className="text-xs text-slate-400 font-normal">
+                {roomTypes.length === 0
+                  ? "— 룸믹스 엑셀을 올리거나, 펼쳐서 직접 만들기"
+                  : `— 카테고리 ${categories.length} · 층 ${floors.length} · 직접 만들기`}
+              </span>
+            )}
+          </button>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {attrSectionOpen && (
+          <>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-5">
             <div>
               <p className="text-xs text-slate-500 mb-2">룸카테고리 (프로젝트별 커스텀)</p>
               <div className="flex flex-wrap gap-2 mb-2">
@@ -2793,6 +2811,8 @@ export default function App() {
               <Plus size={16} /> 룸타입 추가
             </button>
           </div>
+          </>
+          )}
         </div>
 
         {/* Floor allocation + floor plan */}
