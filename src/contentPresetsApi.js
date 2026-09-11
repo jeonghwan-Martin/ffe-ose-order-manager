@@ -15,11 +15,11 @@ const sbHeaders = {
 // 공통베이스만 매칭되고 전용콘텐츠는 자연스럽게 매칭 안 됨, 이게 일반형/체인형을 나누는 별도 플래그가 필요 없는 이유)
 // categoryGroup(FF&E/OS&E)은 "룸타입 카드에서 불러왔냐"가 아니라 catalog_items.accounting_group(진짜 회계 대분류)
 // 그대로 가져온 값 — 침구/타올처럼 계산은 룸타입별(bed/capacity축)이어도 분류는 OS&E인 품목을 정확히 구분하기 위함.
-// 반환: [{ name, catalogItemId, unitPrice, calcBasis, qtyPerRoom, multiplier, mattressSize, categoryGroup, subCategory }]
+// 반환: [{ name, catalogItemId, unitPrice, calcBasis, qtyPerRoom, multiplier, mattressSize, categoryGroup, subCategory, defaultVendorId }]
 export async function fetchContentPresets(category) {
   // PostgREST or= 조건 조합이 복잡해지므로 공통베이스/전용콘텐츠를 두 번 나눠 조회 후 합친다
   const commonRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec,default_vendor_id)`,
     { headers: sbHeaders }
   );
   if (!commonRes.ok) throw new Error(`content_presets(공통) 조회 실패 (${commonRes.status})`);
@@ -28,7 +28,7 @@ export async function fetchContentPresets(category) {
   let categoryRows = [];
   if (category) {
     const catRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec)`,
+      `${SUPABASE_URL}/rest/v1/content_presets?category=eq.${encodeURIComponent(category)}&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec,default_vendor_id)`,
       { headers: sbHeaders }
     );
     if (!catRes.ok) throw new Error(`content_presets(전용) 조회 실패 (${catRes.status})`);
@@ -52,6 +52,9 @@ export async function fetchContentPresets(category) {
       subCategory: ci.category_group ?? null,
       cartonSize: ci.carton_size != null ? Number(ci.carton_size) : null,
       spec: ci.default_spec || "",
+      // 기본 발주 업체 — 품목군 단위로 카탈로그에 지정해둔 값(린넨/타올→아이디인터내셔널, 객실비품→루시오솔루션 등).
+      // 불러올 때 자동 배정되고 품목별로 바꿀 수 있다(2026-09-11 추가).
+      defaultVendorId: ci.default_vendor_id || "",
     };
   });
 }
@@ -64,7 +67,7 @@ export async function fetchContentPresets(category) {
 // OS&E 카드 화면엔 별도 multiplier 컬럼이 없으므로 default_qty×default_multiplier를 미리 곱해 qtyPerRoom 하나로 반환.
 export async function fetchOseContentPresets() {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec)`,
+    `${SUPABASE_URL}/rest/v1/content_presets?category=is.null&select=*,catalog_items(item_name,calc_basis,reference_supply_price,category_group,accounting_group,carton_size,default_spec,default_vendor_id)`,
     { headers: sbHeaders }
   );
   if (!res.ok) throw new Error(`content_presets(OS&E) 조회 실패 (${res.status})`);
@@ -85,7 +88,8 @@ export async function fetchOseContentPresets() {
         categoryGroup: ci.accounting_group ?? null,
         subCategory: ci.category_group ?? null,
         cartonSize: ci.carton_size != null ? Number(ci.carton_size) : null,
-      spec: ci.default_spec || "",
+        spec: ci.default_spec || "",
+        defaultVendorId: ci.default_vendor_id || "",
       };
     });
 }

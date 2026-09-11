@@ -957,6 +957,7 @@ export default function App() {
       cartonSize: p.cartonSize, // 박스/팩당 개수(카탈로그 값) — 있으면 필요수량을 이 배수로 올림해서 발주수량 산출
       spec: p.spec || "", // 규격(카탈로그 default_spec) — 발주서 규격 열, 수정 가능
       brand: "", // 브랜드/제조사 — 카탈로그에 없어 수동 입력
+      vendorId: p.defaultVendorId || "", // 발주 업체 — 카탈로그 품목군 기본값으로 자동 배정, 품목별 변경 가능
     }));
   }
   function confirmPresetPicker() {
@@ -3484,10 +3485,11 @@ export default function App() {
                       </div>
                     )}
                     {items.length > 0 && (
-                      <table className="w-full text-sm mb-1">
+                      <div className="overflow-x-auto -mx-1 px-1">
+                      <table className="w-full text-sm mb-1 min-w-[1180px]">
                         <thead>
                           <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                            <th className="py-1.5 font-normal">품목명</th>
+                            <th className="py-1.5 font-normal sticky left-0 bg-white z-10 w-[15rem]">품목명</th>
                             <th className="py-1.5 font-normal" title="발주서 '브랜드/제조사' 열 — 카탈로그에 없어 직접 입력">브랜드</th>
                             <th className="py-1.5 font-normal" title="발주서 '규격' 열 — 카탈로그에서 불러오면 자동 입력, 수정 가능">규격</th>
                             <th className="py-1.5 font-normal" title="회계 대분류 — 룸타입 카드 안에 있어도 실제로는 OS&E(린넨/타올 등)일 수 있음">구분</th>
@@ -3507,12 +3509,13 @@ export default function App() {
                         <tbody>
                           {items.map((it) => (
                             <tr key={it.id} className="border-b border-slate-100">
-                              <td className="py-1.5">
+                              <td className="py-1.5 sticky left-0 bg-white z-10 pr-2">
                                 <input
                                   value={it.name}
                                   onChange={(e) => updateFfeItem(rt.id, it.id, "name", e.target.value)}
                                   placeholder="예: 퀸 매트리스"
-                                  className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                  title={it.name}
+                                  className="w-full min-w-[14rem] border border-slate-200 rounded-md px-2 py-1 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
                                 />
                               </td>
                               <td className="py-1.5">
@@ -3653,6 +3656,7 @@ export default function App() {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     )}
                     {items.length > 0 && (
                       <div className="text-right text-xs text-slate-500">
@@ -3782,10 +3786,11 @@ export default function App() {
             </div>
           )}
           {oseItems.length > 0 ? (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto -mx-1 px-1">
+            <table className="w-full text-sm min-w-[1120px]">
               <thead>
                 <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                  <th className="py-1.5 font-normal">품목명</th>
+                  <th className="py-1.5 font-normal sticky left-0 bg-white z-10 w-[15rem]">품목명</th>
                   <th className="py-1.5 font-normal" title="발주서 '브랜드/제조사' 열 — 카탈로그에 없어 직접 입력">브랜드</th>
                   <th className="py-1.5 font-normal" title="발주서 '규격' 열 — 카탈로그에서 불러오면 자동 입력, 수정 가능">규격</th>
                   <th className="py-1.5 font-normal" title="회계 대분류 — '공통 품목' 카드에 있어도 실제로는 FF&E일 수 있음(예: 드라이기)">구분</th>
@@ -3804,12 +3809,13 @@ export default function App() {
               <tbody>
                 {oseItems.map((it) => (
                   <tr key={it.id} className="border-b border-slate-100">
-                    <td className="py-1.5">
+                    <td className="py-1.5 sticky left-0 bg-white z-10 pr-2">
                       <input
                         value={it.name}
                         onChange={(e) => updateOseItem(it.id, "name", e.target.value)}
                         placeholder="예: 객실 타월 세트"
-                        className="w-full border border-slate-200 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        title={it.name}
+                        className="w-full min-w-[14rem] border border-slate-200 rounded-md px-2 py-1 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
                       />
                     </td>
                     <td className="py-1.5">
@@ -3927,6 +3933,7 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+            </div>
           ) : (
             <p className="text-xs text-slate-400">품목을 추가하면 전체 객실 수 기준으로 자동 계산됩니다.</p>
           )}
