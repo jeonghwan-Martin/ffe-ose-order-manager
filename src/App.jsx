@@ -895,6 +895,8 @@ export default function App() {
   // Supabase content_presets(전사 표준 초도발주 템플릿)를 이 룸타입에 불러와 채워넣음
   // 룸타입의 category와 일치하는 전용 콘텐츠 + 모든 룸타입 공통 베이스를 함께 가져옴
   const [loadingPresetFor, setLoadingPresetFor] = useState(null);
+  const [fillingAllPresets, setFillingAllPresets] = useState(false);
+  const [presetFillResult, setPresetFillResult] = useState("");
   const [presetError, setPresetError] = useState("");
   // 카탈로그 기본세트를 즉시 다 쏟아붓지 않고, 먼저 불러온 뒤 세부 카테고리(린넨류/타올류 등)를
   // 골라서 선택한 것만 실제로 추가하는 중간 선택 단계 — presetPickerFor: roomTypeId | "OSE" | null
@@ -983,6 +985,45 @@ export default function App() {
       setLoadingPresetFor(null);
     }
   }
+  // 전체 룸타입에 카탈로그 필수 기본세트를 한 번에 채운다(2026-09-10 신규).
+  // 룸믹스를 올리면 룸타입이 한꺼번에 생기는데(은평 힐튼은 11개, 252실) 룸타입마다
+  // "카탈로그 기본세트 불러오기"를 따로 누르는 건 비현실적이라 일괄 버튼을 둔다.
+  // 규칙: (1) 이미 품목이 있는 룸타입은 건너뛴다(덮어쓰기 사고 방지)
+  //       (2) 선택 품목(is_optional)은 제외하고 필수만 넣는다 — 선택 품목은 룸타입별로 골라 담는다
+  //       (3) 카테고리 전용 프리셋은 룸타입 category에 맞는 것만 붙는다(fetchContentPresets가 처리)
+  async function fillAllRoomTypePresets() {
+    const targets = roomTypes.filter((rt) => (ffeItems[rt.id] || []).length === 0);
+    const skipped = roomTypes.length - targets.length;
+    if (targets.length === 0) {
+      setPresetError(
+        `모든 룸타입에 이미 품목이 있어서 채울 대상이 없어요. 특정 룸타입만 다시 채우려면 그 룸타입의 품목을 지운 뒤 실행하거나, 룸타입 카드의 "카탈로그 기본세트 불러오기"를 사용해주세요.`
+      );
+      return;
+    }
+    setFillingAllPresets(true);
+    setPresetError("");
+    try {
+      const additions = {};
+      let itemCount = 0;
+      for (const rt of targets) {
+        const presets = await fetchContentPresets(rt.category);
+        const required = presets.filter((pr) => !pr.isOptional);
+        additions[rt.id] = presetItemsToObjects(required);
+        itemCount += required.length;
+      }
+      setFfeItems((prev) => ({ ...prev, ...additions }));
+      setPresetFillResult(
+        `룸타입 ${targets.length}개에 필수 품목 ${itemCount}건을 채웠어요.` +
+          (skipped > 0 ? ` 이미 품목이 있는 ${skipped}개는 건너뛰었어요.` : "") +
+          " 선택 품목은 룸타입별로 직접 골라주세요."
+      );
+    } catch (err) {
+      setPresetError(`일괄 적용 중 오류가 났어요: ${err.message} (일부만 채워졌을 수 있으니 다시 실행해주세요 — 이미 채워진 룸타입은 건너뜁니다.)`);
+    } finally {
+      setFillingAllPresets(false);
+    }
+  }
+
   function updateFfeItem(roomTypeId, itemId, field, value) {
     const stringFields = ["name", "calcBasis", "mattressSize", "categoryGroup", "subCategory", "vendorId", "brand", "spec"];
     setFfeItems((prev) => ({
@@ -3172,13 +3213,32 @@ export default function App() {
                 <LayoutGrid size={18} />
                 <span className="text-sm font-medium tracking-wide" title="이 카드 이름은 계산 방식(룸타입별)을 뜻할 뿐, 실제 FF&E/OS&E 구분은 각 품목의 '구분' 칸을 따름">룸타입별 품목</span>
               </div>
-              <button
-                onClick={() => setPresetEditorOpen((v) => !v)}
-                className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
-              >
-                기본 세트 편집 ({basicPreset.length}개)
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fillAllRoomTypePresets}
+                  disabled={fillingAllPresets}
+                  title="품목이 비어있는 모든 룸타입에 카탈로그 필수 기본세트를 한 번에 채웁니다. 이미 품목이 있는 룸타입은 건너뛰고, 선택 품목은 제외됩니다."
+                  className="text-xs bg-amber-700 text-white rounded-lg px-2.5 py-1 hover:bg-amber-800 disabled:opacity-50"
+                >
+                  {fillingAllPresets ? "채우는 중..." : "전체 기본세트 채우기"}
+                </button>
+                <button
+                  onClick={() => setPresetEditorOpen((v) => !v)}
+                  className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
+                >
+                  기본 세트 편집 ({basicPreset.length}개)
+                </button>
+              </div>
             </div>
+            {presetFillResult && (
+              <div className="mb-4 flex items-start justify-between gap-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg px-3 py-2">
+                <span>{presetFillResult}</span>
+                <button onClick={() => setPresetFillResult("")} className="text-emerald-700 hover:text-emerald-900 shrink-0">
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+
             {presetEditorOpen && (
               <div className="mb-5 bg-slate-50 border border-slate-200 rounded-lg p-4">
                 <p className="text-[11px] text-slate-500 mb-2">
@@ -3219,7 +3279,12 @@ export default function App() {
               </div>
             )}
             {presetError && (
-              <p className="text-xs text-red-600 mb-2">{presetError}</p>
+              <div className="mb-3 flex items-start justify-between gap-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg px-3 py-2">
+                <span>{presetError}</span>
+                <button onClick={() => setPresetError("")} className="text-rose-600 hover:text-rose-800 shrink-0">
+                  <X size={12} />
+                </button>
+              </div>
             )}
             <div className="space-y-6">
               {roomTypes.map((rt) => {
