@@ -18,12 +18,17 @@ const sbHeaders = {
 //                   category_group, sub_category, order_owner (분류값, 로컬 상태엔 없으므로 기존 값 보존),
 //                   carton_size (박스/팩당 개수 — 발주수량 올림 기준)
 
-function toRow(it, { projectId, roomTypeId }) {
+export function toRow(it, { projectId, roomTypeId }) {
   return {
     project_id: projectId,
     room_type_id: roomTypeId || null,
     common_area_id: null,
     item_name: it.name || "",
+    vendor_id: it.vendorId ?? null,
+    spec: it.spec ?? null,
+    unit: it.unit ?? null,
+    brand: it.brand ?? null,
+    remark: it.remark ?? null,
     quantity: it.qtyPerRoom || 0, // 기준수량(룸당/인당/침대당) — 총 발주수량은 계산근거(base_calc_basis)와 함께 화면에서 산출
     supply_budget_unit_price: it.unitPrice || 0,
     supply_actual_unit_price: it.actualUnitPrice || 0,
@@ -45,10 +50,15 @@ function toRow(it, { projectId, roomTypeId }) {
   };
 }
 
-function fromRow(row) {
+export function fromRow(row) {
   return {
     id: row.id, // Supabase UUID를 그대로 프론트 id로 사용
     name: row.item_name || "",
+    vendorId: row.vendor_id ?? null,
+    spec: row.spec ?? null,
+    unit: row.unit ?? null,
+    brand: row.brand ?? null,
+    remark: row.remark ?? null,
     unitPrice: Number(row.supply_budget_unit_price) || 0,
     actualUnitPrice: Number(row.supply_actual_unit_price) || 0,
     installUnitPrice: Number(row.install_budget_unit_price) || 0,
@@ -107,7 +117,9 @@ export async function saveOrderItems(projectId, ffeItems, oseItems, roomTypeIdMa
   const rows = [];
   Object.entries(ffeItems).forEach(([localRoomTypeId, items]) => {
     const supabaseRoomTypeId = roomTypeIdMap[localRoomTypeId];
-    if (!supabaseRoomTypeId) return; // 매칭되는 room_types row가 없으면(동기화 누락) 건너뜀
+    if (!supabaseRoomTypeId && items.length) {
+      throw new Error("객실 유형 연결이 누락되어 품목 저장을 중단했습니다. 기존 데이터는 변경하지 않았습니다.");
+    }
     items.forEach((it) => rows.push(toRow(it, { projectId, roomTypeId: supabaseRoomTypeId })));
   });
   oseItems.forEach((it) => rows.push(toRow(it, { projectId, roomTypeId: null })));
