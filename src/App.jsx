@@ -900,6 +900,9 @@ export default function App() {
   // 룸타입의 category와 일치하는 전용 콘텐츠 + 모든 룸타입 공통 베이스를 함께 가져옴
   const [loadingPresetFor, setLoadingPresetFor] = useState(null);
   const [fillingAllPresets, setFillingAllPresets] = useState(false);
+  // 업체 미배정 품목 일괄 지정 — 같은 품목이 룸타입마다 흩어져 있어(은평 힐튼은 11개) 품목명으로 묶어 처리한다
+  const [selectedUnassigned, setSelectedUnassigned] = useState(new Set());
+  const [bulkVendorId, setBulkVendorId] = useState("");
   const [presetFillResult, setPresetFillResult] = useState("");
   const [presetError, setPresetError] = useState("");
   // 카탈로그 기본세트를 즉시 다 쏟아붓지 않고, 먼저 불러온 뒤 세부 카테고리(린넨류/타올류 등)를
@@ -990,6 +993,59 @@ export default function App() {
       setLoadingPresetFor(null);
     }
   }
+  // 업체가 미배정인 품목을 품목명으로 묶어 집계. 룸타입별 품목(ffeItems)과 공통 품목(oseItems)을 모두 본다.
+  // 발주서는 업체별로 그룹핑되므로 미배정이 남아 있으면 그 품목은 어느 발주서에도 실리지 않는다 — 그래서 눈에 띄게 띄워준다.
+  const unassignedVendorGroups = useMemo(() => {
+    const map = new Map();
+    const push = (it, where) => {
+      if (it.vendorId) return;
+      const key = (it.name || "").trim() || "(이름 없음)";
+      if (!map.has(key)) map.set(key, { name: key, count: 0, roomTypeCount: 0, inOse: false, subCategory: it.subCategory || "" });
+      const g = map.get(key);
+      g.count += 1;
+      if (where === "ose") g.inOse = true;
+      else g.roomTypeCount += 1;
+      if (!g.subCategory && it.subCategory) g.subCategory = it.subCategory;
+    };
+    roomTypes.forEach((rt) => (ffeItems[rt.id] || []).forEach((it) => push(it, "ffe")));
+    oseItems.forEach((it) => push(it, "ose"));
+    return Array.from(map.values()).sort(
+      (a, b) => (a.subCategory || "").localeCompare(b.subCategory || "", "ko") || a.name.localeCompare(b.name, "ko")
+    );
+  }, [roomTypes, ffeItems, oseItems]);
+
+  function toggleUnassigned(name) {
+    setSelectedUnassigned((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+  function toggleAllUnassigned() {
+    setSelectedUnassigned((prev) =>
+      prev.size === unassignedVendorGroups.length ? new Set() : new Set(unassignedVendorGroups.map((g) => g.name))
+    );
+  }
+  // 선택한 품목명들에 업체를 한 번에 지정. 이미 업체가 있는 품목은 건드리지 않는다(미배정만 채움).
+  function assignVendorToSelected() {
+    if (!bulkVendorId || selectedUnassigned.size === 0) return;
+    const names = selectedUnassigned;
+    const hit = (it) => !it.vendorId && names.has((it.name || "").trim() || "(이름 없음)");
+    setFfeItems((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([rtId, list]) => {
+        next[rtId] = (list || []).map((it) => (hit(it) ? { ...it, vendorId: bulkVendorId } : it));
+      });
+      return next;
+    });
+    setOseItems((prev) => prev.map((it) => (hit(it) ? { ...it, vendorId: bulkVendorId } : it)));
+    const vendorName = vendors.find((v) => v.id === bulkVendorId)?.name || "선택한 업체";
+    setPresetFillResult(`품목 ${names.size}종에 "${vendorName}"을 지정했어요.`);
+    setSelectedUnassigned(new Set());
+    setBulkVendorId("");
+  }
+
   // 전체 룸타입에 카탈로그 필수 기본세트를 한 번에 채운다(2026-09-10 신규).
   // 룸믹스를 올리면 룸타입이 한꺼번에 생기는데(은평 힐튼은 11개, 252실) 룸타입마다
   // "카탈로그 기본세트 불러오기"를 따로 누르는 건 비현실적이라 일괄 버튼을 둔다.
@@ -1564,7 +1620,7 @@ export default function App() {
     }
   }
 
-  // 테스트 공정표 탭에서 프로젝트명 옆 ↗ 버튼으로 발주 관리 탭으로 넘어올 때 사용.
+  // 공정표 탭에서 프로젝트명 옆 ↗ 버튼으로 발주 관리 탭으로 넘어올 때 사용.
   // supaProject: Supabase projects 테이블의 행({ id: uuid, name, ... }) — 같은 id를 그대로 연다.
   async function handleOpenInOrderManager(supaProject) {
     if (!supaProject) return;
@@ -2242,7 +2298,7 @@ export default function App() {
         <div className="flex gap-2 no-print">
           {[
             { key: "main", label: "발주 관리" },
-            { key: "test-schedule", label: "테스트 공정표" },
+            { key: "test-schedule", label: "공정표" },
             { key: "vendors", label: "업체 관리" },
           ].map((t) => (
             <button
@@ -3257,6 +3313,63 @@ export default function App() {
                 <button onClick={() => setPresetFillResult("")} className="text-emerald-700 hover:text-emerald-900 shrink-0">
                   <X size={12} />
                 </button>
+              </div>
+            )}
+            {unassignedVendorGroups.length > 0 && (
+              <div className="mb-5 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                  <p className="text-xs font-medium text-amber-900">
+                    업체 미배정 품목 {unassignedVendorGroups.length}종
+                  </p>
+                  <button onClick={toggleAllUnassigned} className="text-[11px] text-amber-800 underline hover:no-underline">
+                    {selectedUnassigned.size === unassignedVendorGroups.length ? "전체 해제" : "전체 선택"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-amber-700 mb-3">
+                  발주서는 업체별로 만들어지기 때문에 미배정 품목은 어느 발주서에도 실리지 않아요. 같은 품목은 룸타입에 흩어져 있어도 한 줄로 묶여 있으니, 골라서 아래에서 업체를 한 번에 지정하세요.
+                </p>
+                <div className="flex flex-wrap gap-1.5 mb-3 max-h-56 overflow-y-auto">
+                  {unassignedVendorGroups.map((g) => {
+                    const on = selectedUnassigned.has(g.name);
+                    return (
+                      <button
+                        key={g.name}
+                        onClick={() => toggleUnassigned(g.name)}
+                        title={`${g.subCategory || "분류 없음"} · 룸타입 ${g.roomTypeCount}곳${g.inOse ? " + 공통 품목" : ""}`}
+                        className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+                          on
+                            ? "bg-amber-700 text-white border-amber-700"
+                            : "bg-white text-slate-700 border-amber-300 hover:bg-amber-100"
+                        }`}
+                      >
+                        <span>{g.name}</span>
+                        <span className={on ? "text-amber-100" : "text-slate-400"}>×{g.count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={bulkVendorId}
+                    onChange={(e) => setBulkVendorId(e.target.value)}
+                    className="text-xs border border-amber-300 rounded-lg px-2 py-1.5 bg-white text-slate-700"
+                  >
+                    <option value="">업체 선택</option>
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={assignVendorToSelected}
+                    disabled={!bulkVendorId || selectedUnassigned.size === 0}
+                    className="text-xs bg-amber-700 text-white rounded-lg px-3 py-1.5 hover:bg-amber-800 disabled:opacity-40"
+                  >
+                    선택 {selectedUnassigned.size}종에 업체 지정
+                  </button>
+                  <span className="text-[11px] text-amber-700">
+                    자주 쓰는 조합은 카탈로그 기본 업체로 등록해두면 다음부터 자동으로 채워져요.
+                  </span>
+                </div>
               </div>
             )}
 

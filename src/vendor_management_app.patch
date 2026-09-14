@@ -203,7 +203,7 @@ index d71fe0d..567edcb 100644
 @@ -1603,6 +1778,7 @@ export default function App() {
            {[
              { key: "main", label: "발주 관리" },
-             { key: "test-schedule", label: "테스트 공정표" },
+             { key: "test-schedule", label: "공정표" },
 +            { key: "vendors", label: "업체 관리" },
            ].map((t) => (
              <button
