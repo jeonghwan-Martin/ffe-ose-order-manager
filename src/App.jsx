@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import * as XLSX from "xlsx";
 import { Plus, X, Building2, LayoutGrid, Table2, Trash2, Upload, Save, Users, Loader2, LayoutDashboard, ChevronDown, ChevronRight, FileDown } from "lucide-react";
 import {
@@ -604,6 +604,91 @@ function PoModal({ open, onClose, onSubmit, assigned, unassignedCount, initialCo
   );
 }
 
+
+// 카탈로그 기본세트에 어떤 품목이 들어있는지 피커 안에서 바로 확인 (2026-09-15)
+// 전엔 "객실 비품 (9)"처럼 카테고리명과 건수만 보여서 실제로 뭐가 딸려오는지 알 수 없었다.
+const CALC_BASIS_LABEL = { room: "룸당", capacity: "인당", bed: "침대당", project: "현장 고정" };
+
+function PresetItemList({ items, isIncluded }) {
+  const [open, setOpen] = useState(false);
+  const groups = useMemo(() => {
+    const map = new Map();
+    items.forEach((p) => {
+      const cat = p.subCategory || "기타";
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat).push(p);
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], "ko"))
+      .map(([cat, list]) => [cat, list.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "", "ko"))]);
+  }, [items]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] text-amber-800 underline hover:no-underline"
+      >
+        {open ? "품목 목록 접기" : `품목 목록 보기 (${items.length}건)`}
+      </button>
+      {open && (
+        <div className="mt-1.5 max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-slate-50">
+              <tr className="text-left text-slate-500 border-b border-slate-200">
+                <th className="py-1 px-2 font-normal">품목</th>
+                <th className="py-1 px-2 font-normal">기준</th>
+                <th className="py-1 px-2 font-normal text-right">수량</th>
+                <th className="py-1 px-2 font-normal text-right">단가</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map(([cat, list]) => (
+                <Fragment key={cat}>
+                  <tr className="bg-slate-50/60">
+                    <td colSpan={4} className="py-1 px-2 text-slate-500 font-medium">
+                      {cat} ({list.length})
+                    </td>
+                  </tr>
+                  {list.map((p, idx) => {
+                    const on = isIncluded ? isIncluded(p) : true;
+                    const qty = (p.qtyPerRoom || 1) * (p.multiplier || 1);
+                    return (
+                      <tr
+                        key={`${cat}-${p.catalogItemId || p.name}-${p.mattressSize || ""}-${idx}`}
+                        className={`border-b border-slate-100 ${on ? "" : "opacity-40"}`}
+                      >
+                        <td className="py-1 px-2 text-slate-800">
+                          {p.name}
+                          {p.mattressSize ? ` (${p.mattressSize})` : ""}
+                          {p.isOptional && <span className="ml-1 text-slate-400">선택</span>}
+                        </td>
+                        <td className="py-1 px-2 text-slate-500">
+                          {CALC_BASIS_LABEL[p.calcBasis] || p.calcBasis || "-"}
+                        </td>
+                        <td className="py-1 px-2 text-right text-slate-600">
+                          {qty % 1 === 0 ? qty : qty.toFixed(2)}
+                          {p.multiplier && p.multiplier !== 1 && (
+                            <span className="text-slate-400"> (×{p.multiplier})</span>
+                          )}
+                        </td>
+                        <td className="py-1 px-2 text-right text-slate-600">
+                          {p.unitPrice ? p.unitPrice.toLocaleString("ko-KR") : "-"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [projectName, setProjectName] = useState("");
@@ -3755,6 +3840,14 @@ export default function App() {
                         <p className="text-[11px] text-slate-600 mb-2">
                           불러올 카테고리를 선택하세요 (기본은 전체 선택됨)
                         </p>
+                        <PresetItemList
+                          items={presetPickerItems}
+                          isIncluded={(p) =>
+                            p.isOptional
+                              ? presetPickerSelectedOptional.has(optionalKey(p))
+                              : presetPickerSelectedCats.has(p.subCategory || "기타")
+                          }
+                        />
                         <div className="flex flex-wrap gap-2 mb-3">
                           {presetPickerCatCounts.map(([cat, count]) => (
                             <label
@@ -4056,6 +4149,14 @@ export default function App() {
               <p className="text-[11px] text-slate-600 mb-2">
                 불러올 카테고리를 선택하세요 (기본은 전체 선택됨)
               </p>
+              <PresetItemList
+                items={presetPickerItems}
+                isIncluded={(p) =>
+                  p.isOptional
+                    ? presetPickerSelectedOptional.has(optionalKey(p))
+                    : presetPickerSelectedCats.has(p.subCategory || "기타")
+                }
+              />
               <div className="flex flex-wrap gap-2 mb-3">
                 {presetPickerCatCounts.map(([cat, count]) => (
                   <label
