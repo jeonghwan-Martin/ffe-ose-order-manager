@@ -1056,6 +1056,21 @@ export default function App() {
     return presets.filter((p) => !isRoomTypeCardOnly(p));
   }
 
+  // 룸타입 카드용 최종 필터 (2026-09-15) — 위 카드 배치 필터 + 침대 사이즈 매칭.
+  // bed 기준 프리셋은 Q/S가 따로 등록돼 있는데, 전엔 침대 구성과 무관하게 둘 다 넣어서
+  // 해당 사이즈 침대가 없는 룸타입에 "수량 0" 품목이 그대로 쌓였다(청담재 25건).
+  // 수량 계산에서 0이 되므로 금액은 맞았지만 화면·발주서에 0짜리 줄이 남는 문제.
+  function forRoomType(presets, rt) {
+    const sizes = new Set(
+      effectiveBedComposition(rt)
+        .filter((b) => (b.qty || 0) > 0)
+        .map((b) => b.size)
+    );
+    return forRoomTypeCard(presets).filter(
+      (p) => !(p.calcBasis === "bed" && p.mattressSize && !sizes.has(p.mattressSize))
+    );
+  }
+
   function presetItemsToObjects(presets) {    return presets.map((p) => ({
       id: nextId(),
       name: p.name,
@@ -1095,7 +1110,7 @@ export default function App() {
     setLoadingPresetFor(rt.id);
     setPresetError("");
     try {
-      const presets = forRoomTypeCard(await fetchContentPresets(rt.category));
+      const presets = forRoomType(await fetchContentPresets(rt.category), rt);
       setPresetPickerItems(presets);
       setPresetPickerSelectedCats(new Set(presets.filter((p) => !p.isOptional).map((p) => p.subCategory || "기타")));
       setPresetPickerSelectedOptional(new Set());
@@ -1271,6 +1286,79 @@ export default function App() {
     setPriceDrafts({});
   }
 
+  // ── 수량·배수 일괄 조정 (2026-09-15 신규) ─────────────────────────────
+  // 이불솜·경추배게처럼 프리셋 기본 배수(6)를 현장 사정에 맞게 낮춰야 하는 경우가 잦은데,
+  // 같은 품목이 룸타입마다 흩어져 있어 하나씩 찾아 고쳐야 했다. 품목명+매트리스사이즈로 묶어 한 번에 적용한다.
+  // 대상은 룸타입별 품목만 — 공통 품목은 품목당 한 줄뿐이라 표에서 직접 고치는 게 빠르고,
+  // 공통 카드에는 배수 컬럼 자체가 없다(불러올 때 실당수량에 미리 곱해 넣는 구조).
+  const [qtyAdjustOpen, setQtyAdjustOpen] = useState(false);
+  const [qtyDrafts, setQtyDrafts] = useState({}); // { [key]: { qty, mult } }
+  const [qtyAdjustResult, setQtyAdjustResult] = useState("");
+
+  const itemKeyOf = (it) => `${itemNameOf(it)}|${it.mattressSize || ""}`;
+
+  const roomTypeItemGroups = useMemo(() => {
+    const map = new Map();
+    Object.values(ffeItems).forEach((list) =>
+      (list || []).forEach((it) => {
+        const key = itemKeyOf(it);
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            name: itemNameOf(it),
+            mattressSize: it.mattressSize || "",
+            calcBasis: it.calcBasis || "room",
+            count: 0,
+            qtys: new Set(),
+            mults: new Set(),
+          });
+        }
+        const g = map.get(key);
+        g.count++;
+        g.qtys.add(Number(it.qtyPerRoom) || 0);
+        g.mults.add(it.multiplier != null && it.multiplier !== "" ? Number(it.multiplier) : 1);
+      })
+    );
+    return Array.from(map.values())
+      .map((g) => ({
+        ...g,
+        // 룸타입마다 값이 다르면 null — 화면에 "혼재"로 표시하고, 일괄 적용하면 하나로 맞춰진다
+        qtyPerRoom: g.qtys.size === 1 ? Array.from(g.qtys)[0] : null,
+        multiplier: g.mults.size === 1 ? Array.from(g.mults)[0] : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ko") || a.mattressSize.localeCompare(b.mattressSize));
+  }, [ffeItems]);
+
+  function applyQtyAdjust() {
+    const entries = Object.entries(qtyDrafts).filter(
+      ([, v]) => String(v?.qty ?? "").trim() !== "" || String(v?.mult ?? "").trim() !== ""
+    );
+    if (entries.length === 0) return;
+    const byKey = new Map(entries);
+    let count = 0;
+    Object.values(ffeItems).forEach((list) =>
+      (list || []).forEach((it) => {
+        if (byKey.has(itemKeyOf(it))) count++;
+      })
+    );
+    setFfeItems((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([rtId, list]) => {
+        next[rtId] = (list || []).map((it) => {
+          const d = byKey.get(itemKeyOf(it));
+          if (!d) return it;
+          const patched = { ...it };
+          if (String(d.qty ?? "").trim() !== "") patched.qtyPerRoom = Math.max(0, parseFloat(d.qty) || 0);
+          if (String(d.mult ?? "").trim() !== "") patched.multiplier = Math.max(0, parseFloat(d.mult) || 0);
+          return patched;
+        });
+      });
+      return next;
+    });
+    setQtyAdjustResult(`품목 ${byKey.size}종 / ${count}건의 수량·배수를 적용했어요.`);
+    setQtyDrafts({});
+  }
+
   // 전체 룸타입에 카탈로그 필수 기본세트를 한 번에 채운다(2026-09-10 신규).
   // 룸믹스를 올리면 룸타입이 한꺼번에 생기는데(은평 힐튼은 11개, 252실) 룸타입마다
   // "카탈로그 기본세트 불러오기"를 따로 누르는 건 비현실적이라 일괄 버튼을 둔다.
@@ -1292,7 +1380,7 @@ export default function App() {
       const additions = {};
       let itemCount = 0;
       for (const rt of targets) {
-        const presets = forRoomTypeCard(await fetchContentPresets(rt.category));
+        const presets = forRoomType(await fetchContentPresets(rt.category), rt);
         const required = presets.filter((pr) => !pr.isOptional);
         additions[rt.id] = presetItemsToObjects(required);
         itemCount += required.length;
@@ -3559,8 +3647,123 @@ export default function App() {
               </div>
             )}
 
-            {/* 공급집행단가 일괄 입력 — C(예산단가 복사) + B(업체별 입력). 룸타입별·공통 품목에 모두 적용된다. */}
-            {(Object.values(ffeItems).some((l) => (l || []).length > 0) || oseItems.length > 0) && (
+            {/* 수량·배수 일괄 조정 — 룸타입별 품목만 대상(품목명+매트리스사이즈 단위) */}
+            {roomTypeItemGroups.length > 0 && (
+              <div className="mb-5 bg-slate-50 border border-slate-200 rounded-lg p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-medium text-slate-800">수량·배수 일괄 조정</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      같은 품목이 룸타입마다 흩어져 있어도 한 번에 바뀝니다. 공통 품목은 표에서 직접 고치세요.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setQtyAdjustOpen((v) => !v)}
+                    className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 bg-white hover:bg-slate-100"
+                  >
+                    {qtyAdjustOpen ? "닫기" : `열기 (${roomTypeItemGroups.length}종)`}
+                  </button>
+                </div>
+
+                {qtyAdjustOpen && (
+                  <>
+                    <div className="mt-3 max-h-80 overflow-y-auto bg-white border border-slate-200 rounded-lg">
+                      <table className="w-full text-[11px]">
+                        <thead className="sticky top-0 bg-slate-50">
+                          <tr className="text-left text-slate-500 border-b border-slate-200">
+                            <th className="py-1.5 px-2 font-normal">품목</th>
+                            <th className="py-1.5 px-2 font-normal">기준</th>
+                            <th className="py-1.5 px-2 font-normal text-right">건수</th>
+                            <th className="py-1.5 px-2 font-normal text-right">실당수량</th>
+                            <th className="py-1.5 px-2 font-normal text-right">배수</th>
+                            <th className="py-1.5 px-2 font-normal text-right">새 수량</th>
+                            <th className="py-1.5 px-2 font-normal text-right">새 배수</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {roomTypeItemGroups.map((g) => (
+                            <tr key={g.key} className="border-b border-slate-100">
+                              <td className="py-1.5 px-2 font-medium text-slate-800">
+                                {g.name}
+                                {g.mattressSize && <span className="text-slate-400"> ({g.mattressSize})</span>}
+                              </td>
+                              <td className="py-1.5 px-2 text-slate-500">
+                                {CALC_BASIS_LABEL[g.calcBasis] || g.calcBasis}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-slate-500">×{g.count}</td>
+                              <td className="py-1.5 px-2 text-right text-slate-600">
+                                {g.qtyPerRoom === null ? <span className="text-amber-600">혼재</span> : g.qtyPerRoom}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-slate-600">
+                                {g.multiplier === null ? <span className="text-amber-600">혼재</span> : g.multiplier}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={qtyDrafts[g.key]?.qty ?? ""}
+                                  onChange={(e) =>
+                                    setQtyDrafts((prev) => ({
+                                      ...prev,
+                                      [g.key]: { ...(prev[g.key] || {}), qty: e.target.value },
+                                    }))
+                                  }
+                                  placeholder={g.qtyPerRoom === null ? "혼재" : String(g.qtyPerRoom)}
+                                  className="w-16 text-right border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={qtyDrafts[g.key]?.mult ?? ""}
+                                  onChange={(e) =>
+                                    setQtyDrafts((prev) => ({
+                                      ...prev,
+                                      [g.key]: { ...(prev[g.key] || {}), mult: e.target.value },
+                                    }))
+                                  }
+                                  placeholder={g.multiplier === null ? "혼재" : String(g.multiplier)}
+                                  className="w-16 text-right border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      <button
+                        onClick={applyQtyAdjust}
+                        disabled={
+                          Object.values(qtyDrafts).every(
+                            (v) => String(v?.qty ?? "").trim() === "" && String(v?.mult ?? "").trim() === ""
+                          )
+                        }
+                        className="text-xs bg-amber-700 text-white rounded-lg px-3 py-1.5 hover:bg-amber-800 disabled:opacity-40"
+                      >
+                        입력한 값 적용
+                      </button>
+                      <span className="text-[11px] text-slate-500">
+                        빈 칸은 그대로 둡니다. 수량만, 배수만 바꿔도 됩니다.
+                      </span>
+                    </div>
+                    {qtyAdjustResult && (
+                      <div className="mt-2 flex items-start justify-between gap-3 bg-white border border-slate-200 text-slate-700 text-[11px] rounded-lg px-3 py-2">
+                        <span>{qtyAdjustResult}</span>
+                        <button onClick={() => setQtyAdjustResult("")} className="text-slate-400 hover:text-slate-700 shrink-0">
+                          <X size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* 공급집행단가 일괄 입력 — C(예산단가 복사) + B(업체별 입력). 룸타입별·공통 품목에 모두 적용된다. */}            {(Object.values(ffeItems).some((l) => (l || []).length > 0) || oseItems.length > 0) && (
               <div className="mb-5 bg-teal-50 border border-teal-200 rounded-lg p-4">
                 <p className="text-xs font-medium text-teal-900 mb-1">공급집행단가 일괄 입력</p>
                 <p className="text-[11px] text-teal-700 mb-3">
