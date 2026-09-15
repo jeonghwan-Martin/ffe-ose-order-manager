@@ -1040,10 +1040,15 @@ export default function App() {
   // room 기준 품목이 양쪽에 다 들어가 중복 집계·중복 발주되는 문제가 있었다.
   // 생수·락스·화장지 같은 room 기준 소모품(OS&E)은 룸타입별로 다를 이유가 없으므로 공통 카드에만 둔다.
   // 룸타입 카드에는 capacity(인당)·bed(침대수) 기준과 room 기준 FF&E(TV·냉장고 등, 룸타입별 편차 있음)만 남긴다.
-  const isCommonCardOnly = (p) => p.calcBasis === "room" && p.categoryGroup === "OS&E";
+  // room 기준 OS&E 중 예외적으로 룸타입 카드에서 관리하는 품목 (2026-09-15 사용자 결정)
+  // 발매트는 욕실 구성이 룸타입마다 달라(욕조 유무 등) 수량 편차가 있어 룸타입 단위로 잡는다.
+  const ROOM_TYPE_CARD_EXCEPTIONS = new Set(["발매트"]);
+  const isCommonCardOnly = (p) =>
+    p.calcBasis === "room" && p.categoryGroup === "OS&E" && !ROOM_TYPE_CARD_EXCEPTIONS.has(p.name);
   // 반대로 room 기준 FF&E(TV·소형 냉장고·드라이기·커피포트)는 룸타입별 편차가 있어(시그니처 TV 2대, TV 인치 차이)
   // 룸타입 카드에만 둔다. 양쪽에 남겨두면 두 카드를 다 채울 때 TV가 26+26=52대로 이중 계상된다.
-  const isRoomTypeCardOnly = (p) => p.calcBasis === "room" && p.categoryGroup === "FF&E";
+  const isRoomTypeCardOnly = (p) =>
+    p.calcBasis === "room" && (p.categoryGroup === "FF&E" || ROOM_TYPE_CARD_EXCEPTIONS.has(p.name));
   function forRoomTypeCard(presets) {
     return presets.filter((p) => !isCommonCardOnly(p));
   }
