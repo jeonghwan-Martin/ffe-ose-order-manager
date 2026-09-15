@@ -2960,8 +2960,24 @@ export default function App() {
                               {codeFor(rt)}
                             </span>
                             <span className="text-xs text-slate-500 whitespace-nowrap">
-                              {rt.category} · {rt.bed} · 욕조{rt.bathtub}
+                              {rt.category} · {rt.bed}
                               {rt.irregular.length > 0 ? ` · ${rt.irregular.join(", ")}` : ""}
+                            </span>
+                            {/* 욕조는 룸믹스 엑셀에 정보가 없어 기본값 "무"로 들어오므로 카드에서 직접 바꿀 수 있어야 한다(코드 -B/-NB에 반영됨) */}
+                            <span className="flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap">
+                              욕조
+                              <select
+                                value={rt.bathtub}
+                                onChange={(e) => updateRoomTypeField(rt.id, "bathtub", e.target.value)}
+                                title="욕조 유무 — 룸타입 코드(-B/-NB)와 객실명 생성에 반영됨"
+                                className="border border-slate-200 rounded-md py-0.5 pl-1.5 pr-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              >
+                                {BATHTUB.map((b) => (
+                                  <option key={b} value={b}>
+                                    {b}
+                                  </option>
+                                ))}
+                              </select>
                             </span>
                             <span className="flex items-center gap-1 text-xs text-slate-500 whitespace-nowrap">
                               매트리스×
@@ -3196,71 +3212,6 @@ export default function App() {
                 })}
               </tbody>
             </table>
-          </div>
-        )}
-
-        {/* OTA 상세정보 — 객실명과 분리된 구조화 정보 (브랜드 룸 네이밍 가이드라인 v1.0) */}
-        {roomTypes.length > 0 && (
-          <div className="bg-white border border-slate-200 rounded-xl p-6">
-            <div className="flex items-center gap-2 mb-1 text-slate-500">
-              <Table2 size={18} />
-              <span className="text-sm font-medium tracking-wide">OTA 상세정보</span>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">
-              객실명에는 넣지 않고, OTA·홈페이지 상세 정보란에 별도로 표기할 항목이에요.
-            </p>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                    <th className="py-2 font-normal">객실명</th>
-                    <th className="py-2 font-normal">침대 수량</th>
-                    <th className="py-2 font-normal">침대 규격</th>
-                    <th className="py-2 font-normal">최대 투숙인원</th>
-                    <th className="py-2 font-normal">주요 시설</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {roomTypes.map((rt) => (
-                    <tr key={rt.id} className="border-b border-slate-100">
-                      <td className="py-2 font-medium text-slate-800 whitespace-nowrap">{generateRoomName(rt)}</td>
-                      <td className="py-2">
-                        <input
-                          value={rt.otaBedCount || ""}
-                          onChange={(e) => updateRoomTypeField(rt.id, "otaBedCount", e.target.value)}
-                          placeholder="예: 퀸 1개"
-                          className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        />
-                      </td>
-                      <td className="py-2">
-                        <input
-                          value={rt.otaBedSize || ""}
-                          onChange={(e) => updateRoomTypeField(rt.id, "otaBedSize", e.target.value)}
-                          placeholder="예: 160x200cm"
-                          className="w-28 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        />
-                      </td>
-                      <td className="py-2">
-                        <input
-                          value={rt.otaMaxOccupancy || ""}
-                          onChange={(e) => updateRoomTypeField(rt.id, "otaMaxOccupancy", e.target.value)}
-                          placeholder="예: 기준2/최대3"
-                          className="w-28 border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        />
-                      </td>
-                      <td className="py-2">
-                        <input
-                          value={rt.otaFacilities || ""}
-                          onChange={(e) => updateRoomTypeField(rt.id, "otaFacilities", e.target.value)}
-                          placeholder="예: 스파욕조, 테라스, 반신욕조"
-                          className="w-full min-w-[220px] border border-slate-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </div>
         )}
 

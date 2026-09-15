@@ -92,6 +92,12 @@ async function syncRoomTypeBeds(idMap, roomTypes) {
 // roomTypes(App.jsx 로컬 상태)를 Supabase room_types+room_type_beds와 동기화(client_id 기준 upsert, 삭제된 항목 제거)
 // 반환값: { [localId]: supabaseUuid } — order_items 저장 시 room_type_id FK 채우는 데 사용
 export async function saveRoomTypes(projectUuid, roomTypes) {
+  // 0) 안전장치 — 로컬 룸타입이 0개면 아무것도 지우지 않고 그대로 반환한다.
+  //    아래 삭제 로직이 먼저 돌면 "불러오기 실패·프로젝트 전환 중 state가 빈 순간"에 저장을 누르는 것만으로
+  //    DB의 해당 프로젝트 룸타입이 전부 삭제된다(Free 플랜이라 PITR 복구 불가).
+  //    룸타입을 의도적으로 전부 비우려면 화면에서 개별 삭제한 뒤 저장해야 한다.
+  if (roomTypes.length === 0) return {};
+
   // 1) 이 프로젝트에서 사라진 룸타입(더 이상 로컬에 없는 client_id) 삭제
   const existingRes = await fetch(
     `${SUPABASE_URL}/rest/v1/room_types?project_id=eq.${projectUuid}&select=id,client_id`,
@@ -115,8 +121,6 @@ export async function saveRoomTypes(projectUuid, roomTypes) {
     );
     if (!bedsDelRes.ok) throw new Error(`room_type_beds(삭제된 룸타입) 정리 실패 (${bedsDelRes.status})`);
   }
-
-  if (roomTypes.length === 0) return {};
 
   // 2) upsert (client_id, project_id 유니크 인덱스 기준)
   const rows = roomTypes.map((rt) => toRow(rt, projectUuid));
