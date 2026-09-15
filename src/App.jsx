@@ -1046,6 +1046,118 @@ export default function App() {
     setBulkVendorId("");
   }
 
+  // ── 공급집행단가 일괄 입력 (2026-09-15 신규) ─────────────────────────────
+  // 집행단가는 룸타입마다 같은 품목이 흩어져 있어(26실 5타입만 해도 같은 시트가 5곳) 하나씩 찾아 넣는 게 불가능하다.
+  // C: 예산단가를 집행단가로 일괄 복사 / B: 업체를 고르면 그 업체 품목만 모아 품목명 단위로 단가 입력.
+  // 둘 다 이미 값이 있어도 덮어쓴다(정정 발주로 단가가 바뀌는 경우가 정상 동선이므로).
+  const [priceVendorId, setPriceVendorId] = useState("");
+  const [priceDrafts, setPriceDrafts] = useState({}); // { [품목명]: 입력중인 단가 문자열 }
+  const [copyInstallToo, setCopyInstallToo] = useState(false);
+  const [bulkPriceResult, setBulkPriceResult] = useState("");
+
+  // 모든 품목(룸타입별 + OS&E 공통)에 같은 변환을 적용하는 공통 헬퍼
+  function mapAllItems(fn) {
+    setFfeItems((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([rtId, list]) => {
+        next[rtId] = (list || []).map(fn);
+      });
+      return next;
+    });
+    setOseItems((prev) => prev.map(fn));
+  }
+
+  const itemNameOf = (it) => (it.name || "").trim() || "(이름 없음)";
+
+  // 현재 화면의 모든 품목을 한 배열로 — 건수 집계는 setState 업데이터가 아니라 여기서 동기적으로 해야 한다
+  // (업데이터 안에서 카운트하면 다음 렌더에 실행되므로 메시지에 0건으로 찍힘)
+  const flatItems = () => [...Object.values(ffeItems).flatMap((l) => l || []), ...oseItems];
+
+  // C — 예산단가를 집행단가로 일괄 복사(덮어쓰기). 예산단가가 0인 품목은 건너뛴다.
+  function copyBudgetPriceToActual() {
+    const count = flatItems().filter(
+      (it) => (it.unitPrice || 0) > 0 || (copyInstallToo && (it.installUnitPrice || 0) > 0)
+    ).length;
+    mapAllItems((it) => {
+      const supply = it.unitPrice || 0;
+      const install = it.installUnitPrice || 0;
+      if (!supply && !(copyInstallToo && install)) return it;
+      const patched = { ...it };
+      if (supply) patched.actualUnitPrice = supply;
+      if (copyInstallToo && install) patched.installActualUnitPrice = install;
+      return patched;
+    });
+    setBulkPriceResult(
+      count > 0
+        ? `예산단가를 집행단가로 복사했어요 (품목 ${count}건${copyInstallToo ? ", 설치비 포함" : ""}).`
+        : "복사할 예산단가가 없어요."
+    );
+  }
+
+  // B — 선택한 업체에 배정된 품목을 품목명으로 묶어 목록화. 예산단가·현재 집행단가를 같이 보여준다.
+  const vendorPriceGroups = useMemo(() => {
+    if (!priceVendorId) return [];
+    const map = new Map();
+    const add = (it) => {
+      if (it.vendorId !== priceVendorId) return;
+      const name = itemNameOf(it);
+      if (!map.has(name)) {
+        map.set(name, {
+          name,
+          count: 0,
+          subCategory: it.subCategory || "",
+          unitPrice: it.unitPrice || 0,
+          actualPrices: new Set(),
+        });
+      }
+      const g = map.get(name);
+      g.count++;
+      g.actualPrices.add(it.actualUnitPrice || 0);
+    };
+    Object.values(ffeItems).forEach((list) => (list || []).forEach(add));
+    oseItems.forEach(add);
+    return Array.from(map.values())
+      .map((g) => ({
+        ...g,
+        // 인스턴스마다 집행단가가 다르면 혼재 상태임을 표시(일괄 입력하면 하나로 맞춰짐)
+        actualUnitPrice: g.actualPrices.size === 1 ? Array.from(g.actualPrices)[0] : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [priceVendorId, ffeItems, oseItems]);
+
+  // 업체 목록 중 실제로 품목이 배정된 업체만 드롭다운에 노출(28곳 전부 보여주면 찾기 어려움)
+  const vendorsWithItems = useMemo(() => {
+    const ids = new Set();
+    Object.values(ffeItems).forEach((list) => (list || []).forEach((it) => it.vendorId && ids.add(it.vendorId)));
+    oseItems.forEach((it) => it.vendorId && ids.add(it.vendorId));
+    return vendors.filter((v) => ids.has(v.id));
+  }, [vendors, ffeItems, oseItems]);
+
+  // B — 입력한 단가들을 해당 품목명 전체 인스턴스에 적용(덮어쓰기)
+  function applyVendorPrices() {
+    const entries = Object.entries(priceDrafts).filter(([, v]) => String(v).trim() !== "");
+    if (entries.length === 0) return;
+    const priceByName = new Map(entries.map(([name, v]) => [name, Math.max(0, parseFloat(v) || 0)]));
+    const count = flatItems().filter(
+      (it) => it.vendorId === priceVendorId && priceByName.has(itemNameOf(it))
+    ).length;
+    mapAllItems((it) => {
+      if (it.vendorId !== priceVendorId) return it;
+      const price = priceByName.get(itemNameOf(it));
+      if (price === undefined) return it;
+      return { ...it, actualUnitPrice: price };
+    });
+    const vendorName = vendors.find((v) => v.id === priceVendorId)?.name || "선택한 업체";
+    setBulkPriceResult(`"${vendorName}" 품목 ${priceByName.size}종 / ${count}건에 집행단가를 적용했어요.`);
+    setPriceDrafts({});
+  }
+
+  // 업체를 바꾸면 입력 중이던 값은 초기화(다른 업체 품목에 잘못 적용되는 것 방지)
+  function changePriceVendor(id) {
+    setPriceVendorId(id);
+    setPriceDrafts({});
+  }
+
   // 전체 룸타입에 카탈로그 필수 기본세트를 한 번에 채운다(2026-09-10 신규).
   // 룸믹스를 올리면 룸타입이 한꺼번에 생기는데(은평 힐튼은 11개, 252실) 룸타입마다
   // "카탈로그 기본세트 불러오기"를 따로 누르는 건 비현실적이라 일괄 버튼을 둔다.
@@ -3321,6 +3433,142 @@ export default function App() {
                     자주 쓰는 조합은 카탈로그 기본 업체로 등록해두면 다음부터 자동으로 채워져요.
                   </span>
                 </div>
+              </div>
+            )}
+
+            {/* 공급집행단가 일괄 입력 — C(예산단가 복사) + B(업체별 입력). 룸타입별·공통 품목에 모두 적용된다. */}
+            {(Object.values(ffeItems).some((l) => (l || []).length > 0) || oseItems.length > 0) && (
+              <div className="mb-5 bg-teal-50 border border-teal-200 rounded-lg p-4">
+                <p className="text-xs font-medium text-teal-900 mb-1">공급집행단가 일괄 입력</p>
+                <p className="text-[11px] text-teal-700 mb-3">
+                  같은 품목이 룸타입마다 흩어져 있어도 한 번에 적용돼요. 이미 들어있는 집행단가도 덮어씁니다.
+                </p>
+
+                <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-teal-200">
+                  <button
+                    onClick={copyBudgetPriceToActual}
+                    className="text-xs bg-teal-700 text-white rounded-lg px-3 py-1.5 hover:bg-teal-800"
+                  >
+                    예산단가를 집행단가로 복사
+                  </button>
+                  <label className="flex items-center gap-1.5 text-[11px] text-teal-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={copyInstallToo}
+                      onChange={(e) => setCopyInstallToo(e.target.checked)}
+                    />
+                    설치비도 함께 복사
+                  </label>
+                  <span className="text-[11px] text-teal-700">
+                    카탈로그 단가가 곧 발주가인 품목을 한 번에 채울 때 사용하세요.
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <select
+                    value={priceVendorId}
+                    onChange={(e) => changePriceVendor(e.target.value)}
+                    className="text-xs border border-teal-300 rounded-lg px-2 py-1.5 bg-white text-slate-700"
+                  >
+                    <option value="">업체별로 입력 — 업체 선택</option>
+                    {vendorsWithItems.map((v) => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
+                  </select>
+                  {priceVendorId && (
+                    <span className="text-[11px] text-teal-700">
+                      견적서 한 장을 그대로 옮겨 적는 순서예요. 빈 칸은 건드리지 않습니다.
+                    </span>
+                  )}
+                </div>
+
+                {priceVendorId && (
+                  <>
+                    <div className="max-h-72 overflow-y-auto bg-white border border-teal-200 rounded-lg">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-teal-50">
+                          <tr className="text-left text-[11px] text-teal-800 border-b border-teal-200">
+                            <th className="py-1.5 px-2 font-normal">품목</th>
+                            <th className="py-1.5 px-2 font-normal text-right">건수</th>
+                            <th className="py-1.5 px-2 font-normal text-right">예산단가</th>
+                            <th className="py-1.5 px-2 font-normal text-right">현재 집행단가</th>
+                            <th className="py-1.5 px-2 font-normal text-right">새 집행단가</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {vendorPriceGroups.map((g) => (
+                            <tr key={g.name} className="border-b border-slate-100">
+                              <td className="py-1.5 px-2 font-medium text-slate-800">
+                                {g.name}
+                                {g.subCategory && (
+                                  <span className="text-[10px] text-slate-400 ml-1">{g.subCategory}</span>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-slate-500">×{g.count}</td>
+                              <td className="py-1.5 px-2 text-right text-slate-500">
+                                {g.unitPrice ? g.unitPrice.toLocaleString("ko-KR") : "-"}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                {g.actualUnitPrice === null ? (
+                                  <span className="text-amber-600">혼재</span>
+                                ) : g.actualUnitPrice ? (
+                                  <span className="text-teal-700">{g.actualUnitPrice.toLocaleString("ko-KR")}</span>
+                                ) : (
+                                  <span className="text-slate-300">미입력</span>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-2 text-right">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={priceDrafts[g.name] ?? ""}
+                                  onChange={(e) =>
+                                    setPriceDrafts((prev) => ({ ...prev, [g.name]: e.target.value }))
+                                  }
+                                  placeholder={g.unitPrice ? String(g.unitPrice) : "0"}
+                                  className="w-24 text-right border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      <button
+                        onClick={applyVendorPrices}
+                        disabled={Object.values(priceDrafts).every((v) => String(v).trim() === "")}
+                        className="text-xs bg-teal-700 text-white rounded-lg px-3 py-1.5 hover:bg-teal-800 disabled:opacity-40"
+                      >
+                        입력한 단가 적용
+                      </button>
+                      <button
+                        onClick={() =>
+                          setPriceDrafts(
+                            Object.fromEntries(
+                              vendorPriceGroups.filter((g) => g.unitPrice).map((g) => [g.name, String(g.unitPrice)])
+                            )
+                          )
+                        }
+                        className="text-xs border border-teal-300 rounded-lg px-2.5 py-1.5 bg-white hover:bg-teal-100 text-teal-800"
+                      >
+                        예산단가로 칸 채우기
+                      </button>
+                      <span className="text-[11px] text-teal-700">
+                        채운 뒤 다른 값만 고쳐서 적용하면 빠릅니다.
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {bulkPriceResult && (
+                  <div className="mt-3 flex items-start justify-between gap-3 bg-white border border-teal-200 text-teal-800 text-[11px] rounded-lg px-3 py-2">
+                    <span>{bulkPriceResult}</span>
+                    <button onClick={() => setBulkPriceResult("")} className="text-teal-600 hover:text-teal-900 shrink-0">
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
