@@ -742,6 +742,14 @@ export default function App() {
     });
   }
 
+  // 룸타입 전체 접기/펼치기 (2026-09-15) — 룸타입이 5~11개씩 생기면서 하나씩 접는 게 번거로워 일괄 토글 추가.
+  // 개별 토글은 그대로 동작하고, 이 버튼은 "하나라도 펼쳐져 있으면 전부 접기 / 전부 접혀 있으면 전부 펼치기"다.
+  const allRoomTypesCollapsed =
+    roomTypes.length > 0 && roomTypes.every((rt) => collapsedRoomTypeIds.has(rt.id));
+  function toggleAllRoomTypesCollapsed() {
+    setCollapsedRoomTypeIds(allRoomTypesCollapsed ? new Set() : new Set(roomTypes.map((rt) => rt.id)));
+  }
+
   // 현장지출 / 인건비 지출 / 예산외 지출 (현장지출·예산외지출은 직접입력, 인건비지출만 단가×인원수 자동계산)
   const [siteExpenses, setSiteExpenses] = useState([]); // [{id,name,budgetAmount,actualAmount}]
   const [laborExpenses, setLaborExpenses] = useState([]); // [{id,name,unitPrice,actualUnitPrice,quantity,actualQuantity,budgetAmount,actualAmount}]
@@ -3369,6 +3377,16 @@ export default function App() {
                 <span className="text-sm font-medium tracking-wide" title="이 카드 이름은 계산 방식(룸타입별)을 뜻할 뿐, 실제 FF&E/OS&E 구분은 각 품목의 '구분' 칸을 따름">룸타입별 품목</span>
               </div>
               <div className="flex items-center gap-2">
+                {roomTypes.length > 1 && (
+                  <button
+                    onClick={toggleAllRoomTypesCollapsed}
+                    title={allRoomTypesCollapsed ? "모든 룸타입 펼치기" : "모든 룸타입 접기"}
+                    className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50 flex items-center gap-1"
+                  >
+                    {allRoomTypesCollapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    {allRoomTypesCollapsed ? "전체 펼치기" : "전체 접기"}
+                  </button>
+                )}
                 <button
                   onClick={fillAllRoomTypePresets}
                   disabled={fillingAllPresets}
