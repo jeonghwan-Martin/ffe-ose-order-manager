@@ -942,8 +942,23 @@ export default function App() {
     setPresetPickerItems([]);
     setPresetPickerSelectedOptional(new Set());
   }
-  function presetItemsToObjects(presets) {
-    return presets.map((p) => ({
+  // 룸타입별 품목 카드에서 제외할 프리셋 (2026-09-15) — 중복 방지
+  // 공통 품목 카드는 calc_basis room+project를, 룸타입 카드는 room+capacity+bed를 불러오기 때문에
+  // room 기준 품목이 양쪽에 다 들어가 중복 집계·중복 발주되는 문제가 있었다.
+  // 생수·락스·화장지 같은 room 기준 소모품(OS&E)은 룸타입별로 다를 이유가 없으므로 공통 카드에만 둔다.
+  // 룸타입 카드에는 capacity(인당)·bed(침대수) 기준과 room 기준 FF&E(TV·냉장고 등, 룸타입별 편차 있음)만 남긴다.
+  const isCommonCardOnly = (p) => p.calcBasis === "room" && p.categoryGroup === "OS&E";
+  // 반대로 room 기준 FF&E(TV·소형 냉장고·드라이기·커피포트)는 룸타입별 편차가 있어(시그니처 TV 2대, TV 인치 차이)
+  // 룸타입 카드에만 둔다. 양쪽에 남겨두면 두 카드를 다 채울 때 TV가 26+26=52대로 이중 계상된다.
+  const isRoomTypeCardOnly = (p) => p.calcBasis === "room" && p.categoryGroup === "FF&E";
+  function forRoomTypeCard(presets) {
+    return presets.filter((p) => !isCommonCardOnly(p));
+  }
+  function forCommonCard(presets) {
+    return presets.filter((p) => !isRoomTypeCardOnly(p));
+  }
+
+  function presetItemsToObjects(presets) {    return presets.map((p) => ({
       id: nextId(),
       name: p.name,
       unitPrice: p.unitPrice,
@@ -982,7 +997,7 @@ export default function App() {
     setLoadingPresetFor(rt.id);
     setPresetError("");
     try {
-      const presets = await fetchContentPresets(rt.category);
+      const presets = forRoomTypeCard(await fetchContentPresets(rt.category));
       setPresetPickerItems(presets);
       setPresetPickerSelectedCats(new Set(presets.filter((p) => !p.isOptional).map((p) => p.subCategory || "기타")));
       setPresetPickerSelectedOptional(new Set());
@@ -1179,7 +1194,7 @@ export default function App() {
       const additions = {};
       let itemCount = 0;
       for (const rt of targets) {
-        const presets = await fetchContentPresets(rt.category);
+        const presets = forRoomTypeCard(await fetchContentPresets(rt.category));
         const required = presets.filter((pr) => !pr.isOptional);
         additions[rt.id] = presetItemsToObjects(required);
         itemCount += required.length;
@@ -1256,7 +1271,7 @@ export default function App() {
     setLoadingOsePreset(true);
     setOsePresetError("");
     try {
-      const presets = await fetchOseContentPresets();
+      const presets = forCommonCard(await fetchOseContentPresets());
       setPresetPickerItems(presets);
       setPresetPickerSelectedCats(new Set(presets.filter((p) => !p.isOptional).map((p) => p.subCategory || "기타")));
       setPresetPickerSelectedOptional(new Set());
