@@ -1280,6 +1280,27 @@ export default function App() {
     setPriceDrafts({});
   }
 
+  // ── 품목 전체 삭제 (2026-09-15 신규) ─────────────────────────────
+  // 프리셋을 잘못 불러왔거나 구성을 처음부터 다시 잡을 때, 룸타입마다 들어가 하나씩 지우는 게 불가능해 추가.
+  // 룸타입별 품목과 공통 품목을 함께 비운다. 되돌릴 수 없으므로 버튼을 두 번 눌러야 실행된다.
+  const [confirmClearItems, setConfirmClearItems] = useState(false);
+  const totalItemCount = useMemo(
+    () => Object.values(ffeItems).reduce((s, l) => s + (l || []).length, 0) + oseItems.length,
+    [ffeItems, oseItems]
+  );
+  function clearAllItems() {
+    setFfeItems({});
+    setOseItems([]);
+    setQtyDrafts({});
+    setPriceDrafts({});
+    setQtyAdjustResult("");
+    setBulkPriceResult("");
+    setConfirmClearItems(false);
+    setPresetFillResult(
+      `품목 ${totalItemCount}건을 모두 지웠어요. 저장을 눌러야 팀 저장소에도 반영됩니다.`
+    );
+  }
+
   // 업체를 바꾸면 입력 중이던 값은 초기화(다른 업체 품목에 잘못 적용되는 것 방지)
   function changePriceVendor(id) {
     setPriceVendorId(id);
@@ -3579,6 +3600,32 @@ export default function App() {
                 >
                   기본 세트 편집 ({basicPreset.length}개)
                 </button>
+                {totalItemCount > 0 &&
+                  (confirmClearItems ? (
+                    <span className="flex items-center gap-1.5">
+                      <button
+                        onClick={clearAllItems}
+                        title="룸타입별 품목과 공통 품목을 모두 지웁니다"
+                        className="text-xs bg-rose-600 text-white rounded-lg px-2.5 py-1 hover:bg-rose-700"
+                      >
+                        {totalItemCount}건 전체 삭제
+                      </button>
+                      <button
+                        onClick={() => setConfirmClearItems(false)}
+                        className="text-xs border border-slate-300 rounded-lg px-2.5 py-1 hover:bg-slate-50"
+                      >
+                        취소
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmClearItems(true)}
+                      title="불러온 품목 전체를 지웁니다(룸타입별 + 공통)"
+                      className="text-xs border border-rose-300 text-rose-700 rounded-lg px-2.5 py-1 hover:bg-rose-50 flex items-center gap-1"
+                    >
+                      <Trash2 size={13} /> 품목 전체 삭제
+                    </button>
+                  ))}
               </div>
             </div>
             {presetFillResult && (
