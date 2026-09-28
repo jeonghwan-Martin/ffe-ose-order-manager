@@ -8,7 +8,7 @@ import {
 
 import { getProjectData } from "./api"; // 예전 Apps Script 블롭 읽기 전용(Supabase 이전 보완용)
 import { saveRoomTypes, loadRoomTypes } from "./roomTypesApi";
-import { saveOrderItems, loadOrderItems } from "./orderItemsApi";
+import { saveOrderItems, loadOrderItems, assignOrderItemIds } from "./orderItemsApi";
 import { saveExpenses, loadExpenses } from "./expensesApi";
 import { listProjects, getProject, createProject, updateProject } from "./projectsApi";
 import { saveProjectSettings, loadProjectSettings } from "./projectSettingsApi";
@@ -1779,6 +1779,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
+  // 프로젝트 불러오기가 실패하면 화면이 빈 상태라, 이때 저장하면 DB의 품목·지출이 지워진다 — 저장을 막는다
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [supabaseSyncError, setSupabaseSyncError] = useState("");
   const [loadNotice, setLoadNotice] = useState("");
@@ -1863,6 +1865,7 @@ export default function App() {
     if (!id) return;
     setIsLoading(true);
     resetProjectState();
+    setLoadFailed(false);
     setLoadNotice("");
     setSupabaseSyncError("");
     try {
@@ -1926,6 +1929,7 @@ export default function App() {
       }
       applyLoadedData(merged);
     } catch (err) {
+      setLoadFailed(true);
       setSaveError("프로젝트를 불러오지 못했어요: " + (err.message || "네트워크 상태를 확인해주세요."));
     } finally {
       setCurrentProjectId(id);
@@ -2002,13 +2006,36 @@ export default function App() {
   // 룸타입/발주품목/지출은 각 테이블, 옵션 설정·티어·목표객실수·실당예산은 projects.settings, 프로젝트명·배정예산은 projects 컬럼.
   async function saveProject() {
     if (!currentProjectId) return;
+    if (loadFailed) {
+      setSaveError("프로젝트를 제대로 불러오지 못한 상태라 저장하지 않았어요. 프로젝트를 다시 선택해 불러온 뒤 저장해주세요.");
+      return;
+    }
+    // 새 품목에 UUID를 붙여 화면 상태에도 반영 — 다음 저장 때 같은 행으로 upsert되게 한다
+    // (아래 await 전에 해야 저장 중에 입력한 내용을 덮어쓰지 않는다)
+    const ids = assignOrderItemIds(ffeItems, oseItems);
+    if (ids.changed) {
+      setFfeItems(ids.ffeItems);
+      setOseItems(ids.oseItems);
+    }
     setIsSaving(true);
     setSaveError("");
     setSupabaseSyncError("");
     try {
+      // 동시 편집 확인 — 내가 불러온 뒤 다른 사람이 저장했다면 덮어쓰기 전에 물어본다
+      const remote = await loadProjectSettings(currentProjectId);
+      const remoteSavedAt = remote && remote.savedAt;
+      if (remoteSavedAt && remoteSavedAt !== lastSaved) {
+        const ok = window.confirm(
+          `다른 사람이 ${new Date(remoteSavedAt).toLocaleString("ko-KR")}에 이 프로젝트를 저장했어요.\n` +
+            "지금 저장하면 그 사람이 바꾼 내용을 덮어씁니다. 그래도 저장할까요?\n\n" +
+            "(취소를 누르고 프로젝트를 다시 불러오면 최신 내용을 볼 수 있어요. 다시 불러오면 내 변경사항은 사라져요.)"
+        );
+        if (!ok) return;
+      }
+
       const savedAt = new Date().toISOString();
       const roomTypeIdMap = await saveRoomTypes(currentProjectId, roomTypes);
-      await saveOrderItems(currentProjectId, ffeItems, oseItems, roomTypeIdMap);
+      await saveOrderItems(currentProjectId, ids.ffeItems, ids.oseItems, roomTypeIdMap);
       await saveExpenses(currentProjectId, { siteExpenses, laborExpenses, extraExpenses });
       await saveProjectSettings(currentProjectId, {
         categories, irregularOptions, brandRoomName, roomFeatures, viewTypes, floors, basicPreset, poContact,
