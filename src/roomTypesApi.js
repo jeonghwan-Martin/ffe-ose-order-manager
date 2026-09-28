@@ -58,16 +58,18 @@ function toRow(rt, projectId) {
   };
 }
 
-// idMap({localId: supabaseUuid})과 roomTypes를 받아 room_type_beds를 전체교체 방식으로 동기화
+// idMap({localId: supabaseUuid})과 roomTypes를 받아 room_type_beds를 동기화
+// 새 구성을 먼저 넣고 예전 행을 나중에 지운다 — 삽입이 실패해도 기존 침대구성이 남는다.
 async function syncRoomTypeBeds(idMap, roomTypes) {
   const roomTypeUuids = Object.values(idMap);
+  let oldIds = [];
   if (roomTypeUuids.length > 0) {
-    const idList = roomTypeUuids.join(",");
-    const delRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/room_type_beds?room_type_id=in.(${idList})`,
-      { method: "DELETE", headers: sbHeaders }
+    const existingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/room_type_beds?room_type_id=in.(${roomTypeUuids.join(",")})&select=id`,
+      { headers: sbHeaders }
     );
-    if (!delRes.ok) throw new Error(`room_type_beds 삭제 실패 (${delRes.status})`);
+    if (!existingRes.ok) throw new Error(`room_type_beds 조회 실패 (${existingRes.status})`);
+    oldIds = (await existingRes.json()).map((r) => r.id);
   }
 
   const rows = [];
@@ -78,14 +80,22 @@ async function syncRoomTypeBeds(idMap, roomTypes) {
       rows.push({ room_type_id: uuid, mattress_size: b.size, bed_qty: b.qty });
     });
   });
-  if (rows.length === 0) return;
+  if (rows.length > 0) {
+    const insRes = await fetch(`${SUPABASE_URL}/rest/v1/room_type_beds`, {
+      method: "POST",
+      headers: sbHeaders,
+      body: JSON.stringify(rows),
+    });
+    if (!insRes.ok) throw new Error(`room_type_beds 저장 실패 (${insRes.status})`);
+  }
 
-  const insRes = await fetch(`${SUPABASE_URL}/rest/v1/room_type_beds`, {
-    method: "POST",
-    headers: sbHeaders,
-    body: JSON.stringify(rows),
-  });
-  if (!insRes.ok) throw new Error(`room_type_beds 저장 실패 (${insRes.status})`);
+  for (let i = 0; i < oldIds.length; i += 100) {
+    const delRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/room_type_beds?id=in.(${oldIds.slice(i, i + 100).join(",")})`,
+      { method: "DELETE", headers: sbHeaders }
+    );
+    if (!delRes.ok) throw new Error(`room_type_beds 삭제 실패 (${delRes.status})`);
+  }
 }
 
 // projectUuid: Supabase projects.id(uuid) — 발주관리 탭 드롭다운에서 선택한 프로젝트 id

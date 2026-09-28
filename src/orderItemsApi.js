@@ -1,5 +1,7 @@
 // 발주관리 탭(FF&E/OS&E) — Supabase order_items 테이블 데이터 레이어
 // 공정표 탭(TestScheduleDashboard.jsx)과 동일하게 raw fetch + PostgREST 방식 사용
+import { syncRows, isUuid } from "./supabaseSync";
+
 const SUPABASE_URL = "https://fsjyzehxovazlmuihxxd.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzanl6ZWh4b3ZhemxtdWloeHhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU5MTQ5NzcsImV4cCI6MjEwMTQ5MDk3N30.SayUMy8ajeMKGYmzek0H152dKwCLEzTP38yYm8u0a-g";
@@ -20,6 +22,7 @@ const sbHeaders = {
 
 function toRow(it, { projectId, roomTypeId }) {
   return {
+    id: it.id, // assignOrderItemIds()로 미리 UUID를 채워둔 값 — upsert 기준
     project_id: projectId,
     room_type_id: roomTypeId || null,
     common_area_id: null,
@@ -99,9 +102,33 @@ export async function loadOrderItems(projectId, roomTypeIdMap = {}) {
   return { ffeItems, oseItems };
 }
 
+// 저장 전에 모든 품목이 고유한 UUID id를 갖도록 정리한다.
+// 새로 추가한 품목(로컬 숫자 id)이나 복사로 id가 겹친 품목에는 새 UUID를 붙인다.
+// 반환된 ffeItems/oseItems를 화면 상태에도 반영해야 다음 저장 때 같은 행으로 인식된다.
+export function assignOrderItemIds(ffeItems, oseItems) {
+  const seen = new Set();
+  let changed = false;
+  const fix = (it) => {
+    if (isUuid(it.id) && !seen.has(it.id)) {
+      seen.add(it.id);
+      return it;
+    }
+    changed = true;
+    const id = crypto.randomUUID();
+    seen.add(id);
+    return { ...it, id };
+  };
+  const nextFfe = {};
+  Object.entries(ffeItems).forEach(([rtId, items]) => {
+    nextFfe[rtId] = items.map(fix);
+  });
+  const nextOse = oseItems.map(fix);
+  return { ffeItems: nextFfe, oseItems: nextOse, changed };
+}
+
 // 프로젝트의 ffeItems/oseItems를 order_items 테이블과 동기화
-// 전체 교체 방식: 기존 프로젝트 order_items를 삭제 후 현재 상태를 다시 insert
-// (품목 수가 많지 않은 스프레드시트형 데이터라 diff 대신 단순 전체 교체가 안전하고 구현이 명확함)
+// id 기준 upsert 후 화면에서 사라진 품목만 삭제(supabaseSync.syncRows) — 저장 도중 실패해도 기존 품목이 지워지지 않는다.
+// ffeItems/oseItems는 assignOrderItemIds()를 거친 값이어야 한다.
 // roomTypeIdMap: { [App.jsx 로컬 roomTypeId]: Supabase room_types.id(uuid) } — roomTypesApi.saveRoomTypes()의 반환값을 그대로 전달
 export async function saveOrderItems(projectId, ffeItems, oseItems, roomTypeIdMap) {
   const rows = [];
@@ -112,20 +139,5 @@ export async function saveOrderItems(projectId, ffeItems, oseItems, roomTypeIdMa
   });
   oseItems.forEach((it) => rows.push(toRow(it, { projectId, roomTypeId: null })));
 
-  const delRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/order_items?project_id=eq.${projectId}`,
-    { method: "DELETE", headers: sbHeaders }
-  );
-  if (!delRes.ok) throw new Error(`order_items 삭제 실패 (${delRes.status})`);
-
-  if (rows.length === 0) return { count: 0 };
-
-  const insRes = await fetch(`${SUPABASE_URL}/rest/v1/order_items`, {
-    method: "POST",
-    headers: { ...sbHeaders, Prefer: "return=representation" },
-    body: JSON.stringify(rows),
-  });
-  if (!insRes.ok) throw new Error(`order_items 저장 실패 (${insRes.status})`);
-  const inserted = await insRes.json();
-  return { count: inserted.length };
+  return syncRows("order_items", `project_id=eq.${projectId}`, rows);
 }

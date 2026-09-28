@@ -4,6 +4,8 @@
 // 함께 저장 — budgetAmount/actualAmount는 App.jsx에서 단가×인원수로 미리 계산해 채워 넣은 값(하위호환 유지).
 // 세 지출 종류는 expense_type 컬럼으로 한 테이블에서 구분한다.
 // room_types와 동일하게 client_id로 App.jsx 로컬 nextId()와 Supabase UUID를 매칭한다.
+import { syncRows } from "./supabaseSync";
+
 const SUPABASE_URL = "https://fsjyzehxovazlmuihxxd.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzanl6ZWh4b3ZhemxtdWloeHhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU5MTQ5NzcsImV4cCI6MjEwMTQ5MDk3N30.SayUMy8ajeMKGYmzek0H152dKwCLEzTP38yYm8u0a-g";
@@ -39,30 +41,26 @@ function toRow(it, projectId, expenseType) {
 }
 
 // siteExpenses/laborExpenses/extraExpenses를 project_expenses와 동기화
-// (전체 삭제 후 재삽입 — order_items와 동일한 전체교체 방식, 품목 수가 적어 안전하고 단순함)
+// client_id로 기존 행의 id를 찾아 upsert하고, 화면에서 사라진 행만 삭제(supabaseSync.syncRows)
+// — 예전 전체 삭제 후 재삽입 방식은 삽입이 실패하면 지출 내역이 통째로 사라졌다.
 export async function saveExpenses(projectId, { siteExpenses, laborExpenses, extraExpenses }) {
+  const existingRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/project_expenses?project_id=eq.${projectId}&select=id,client_id`,
+    { headers: sbHeaders }
+  );
+  if (!existingRes.ok) throw new Error(`project_expenses 조회 실패 (${existingRes.status})`);
+  const idByClientId = {};
+  (await existingRes.json()).forEach((e) => {
+    if (e.client_id) idByClientId[e.client_id] = e.id;
+  });
+
   const rows = [
     ...siteExpenses.map((it) => toRow(it, projectId, TYPE_MAP.site)),
     ...laborExpenses.map((it) => toRow(it, projectId, TYPE_MAP.labor)),
     ...extraExpenses.map((it) => toRow(it, projectId, TYPE_MAP.extra)),
-  ];
+  ].map((row) => ({ id: idByClientId[row.client_id] || crypto.randomUUID(), ...row }));
 
-  const delRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/project_expenses?project_id=eq.${projectId}`,
-    { method: "DELETE", headers: sbHeaders }
-  );
-  if (!delRes.ok) throw new Error(`project_expenses 삭제 실패 (${delRes.status})`);
-
-  if (rows.length === 0) return { count: 0 };
-
-  const insRes = await fetch(`${SUPABASE_URL}/rest/v1/project_expenses`, {
-    method: "POST",
-    headers: { ...sbHeaders, Prefer: "return=representation" },
-    body: JSON.stringify(rows),
-  });
-  if (!insRes.ok) throw new Error(`project_expenses 저장 실패 (${insRes.status})`);
-  const inserted = await insRes.json();
-  return { count: inserted.length };
+  return syncRows("project_expenses", `project_id=eq.${projectId}`, rows);
 }
 
 // Supabase project_expenses를 읽어 App.jsx 로컬 형태(siteExpenses/laborExpenses/extraExpenses)로 변환
